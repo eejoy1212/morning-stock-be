@@ -1,0 +1,35 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  createdAt DateTime @default(now())
+  sectors   Sector[]
+}
+
+model Sector {
+  id        String   @id @default(cuid())
+  name      String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  stocks    Stock[]
+  createdAt DateTime @default(now())
+}
+
+model Stock {
+  id        String   @id @default(cuid())
+  name      String
+  code      String
+  sectorId  String
+  sector    Sector   @relation(fields: [sectorId], references: [id])
+}
