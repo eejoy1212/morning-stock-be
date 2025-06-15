@@ -2,7 +2,9 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import jwt from 'jsonwebtoken';
-
+import xlsx from 'xlsx';
+import axios from 'axios';
+import iconv from 'iconv-lite';
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
@@ -123,5 +125,49 @@ router.get('/:sectorId', authenticateToken, async (req, res) => {
     res.status(500).json({ error: '종목 조회 실패', details: err.message });
   }
 });
+/**
+ * @swagger
+ * /api/stock/fetch-from-krx:
+ *   post:
+ *     summary: KRX에서 기업리스트를 가져와 TickerInfo 테이블에 저장 (XLSX 기반)
+ *     tags: [Stock]
+ *     responses:
+ *       200:
+ *         description: 저장된 기업 수 반환
+ *       500:
+ *         description: 서버 오류
+ */
+router.post('/fetch-from-krx', async (req, res) => {
+  try {
+    const response = await axios.get(
+      'https://kind.krx.co.kr/corpgeneral/corpList.do?method=download',
+      { responseType: 'arraybuffer' }
+    );
 
+    const decodedBuffer = iconv.decode(Buffer.from(response.data), 'EUC-KR');
+    const workbook = xlsx.read(decodedBuffer, { type: 'string' });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = xlsx.utils.sheet_to_json(sheet);
+console.log(rows)
+    let count = 0;
+    for (const row of rows) {
+      const name = row['회사명'];
+      const code = String(row['종목코드']).padStart(6, '0');
+      const market = row['시장구분'];
+
+      if (!name || !code || !market) continue;
+
+      const exists = await prisma.tickerInfo.findFirst({ where: { code } });
+      if (!exists) {
+        await prisma.tickerInfo.create({ data: { name, code, market } });
+        count++;
+      }
+    }
+
+    res.json({ success: true, count });
+  } catch (err) {
+    console.error('KRX 수집 오류:', err);
+    res.status(500).json({ error: 'KRX 수집 실패', details: err.message });
+  }
+});
 export default router;

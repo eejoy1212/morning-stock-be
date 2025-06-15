@@ -33,3 +33,19 @@ model Stock {
   sectorId  String
   sector    Sector   @relation(fields: [sectorId], references: [id])
 }
+model DailyPrice {
+  id     String   @id @default(cuid())
+  name   String
+ code   String   @default("")
+  close  Int
+  date   DateTime
+  createdAt DateTime @default(now())
+}
+
+model TickerInfo {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now())
+  market String @default("")// "KOSDAQ" or "KOSPI"
+}
