@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import jwt from 'jsonwebtoken';
 import dayjs from 'dayjs'
 import axios from 'axios';
+import * as cheerio from 'cheerio'
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
@@ -229,43 +230,95 @@ router.get('/monthly-gainers', async (req, res) => {
  *                       pubDate:
  *                         type: string
  */
+// 🔍 og:image 파싱 함수
+async function getOgImage(url) {
+  try {
+    const { data: html } = await axios.get(url, {
+      timeout: 3000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0', // 크롤링 차단 방지
+      },
+    })
+
+    const $ = cheerio.load(html)
+
+    // 1순위: og:image
+    const ogImage = $('meta[property="og:image"]').attr('content')
+    if (ogImage) return ogImage
+
+    // 2순위: 가장 큰 <img> 찾기 (폭 또는 높이 큰 순서)
+    const images = $('img')
+      .map((_, el) => {
+        const src = $(el).attr('src') || $(el).attr('data-src')
+        const width = parseInt($(el).attr('width')) || 0
+        const height = parseInt($(el).attr('height')) || 0
+        return { src, width, height, area: width * height }
+      })
+      .get()
+      .filter(img => img.src && img.src.startsWith('http')) // 절대 경로만
+      .sort((a, b) => b.area - a.area) // 가장 큰 이미지 우선
+
+    if (images.length > 0) return images[0].src
+
+    // 3순위: 첫 번째 <img>라도
+    const fallback = $('img').first().attr('src')
+    if (fallback && fallback.startsWith('http')) return fallback
+
+    // 4순위: 기본 썸네일
+    return 'https://yourcdn.com/default-thumbnail.png'
+  } catch (err) {
+    console.warn(`이미지 추출 실패 (${url}):`, err.message)
+    return 'https://yourcdn.com/default-thumbnail.png'
+  }
+}
+
+
+// 📡 뉴스 라우터
 router.get('/news', authenticateToken, async (req, res) => {
   try {
     const sectors = await prisma.sector.findMany({
       where: { userId: req.userId },
       include: { stocks: true },
-    });
+    })
 
     const keywords = [
       ...new Set(sectors.flatMap(sector => sector.stocks.map(stock => stock.name)))
-    ];
+    ]
 
-    const clientId = process.env.NAVER_CLIENT_ID;
-    const clientSecret = process.env.NAVER_CLIENT_SECRET;
-    const allArticles = [];
+    const clientId = process.env.NAVER_CLIENT_ID
+    const clientSecret = process.env.NAVER_CLIENT_SECRET
+    const allArticles = []
 
     for (const keyword of keywords) {
-      const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(keyword)}&display=5&sort=date`;
+      const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(keyword)}&display=5&sort=date`
 
       const { data } = await axios.get(url, {
         headers: {
           'X-Naver-Client-Id': clientId,
           'X-Naver-Client-Secret': clientSecret,
         },
-      });
+      })
 
       if (data.items && data.items.length > 0) {
-        allArticles.push(...data.items);
+        // 각 뉴스에 대해 og:image 추가
+        for (const item of data.items) {
+          const ogImage = await getOgImage(item.link)
+          allArticles.push({
+            ...item,
+            image: ogImage, // 🔗 이미지 추가
+          })
+        }
       }
 
-      if (allArticles.length > 10) break; // 필요 시 개수 제한
+      if (allArticles.length > 24) break // 필요 시 개수 제한
     }
 
-    res.json({ success: true, articles: allArticles.slice(0, 10) });
+    res.json({ success: true, articles: allArticles.slice(0, 24) })
   } catch (err) {
-    console.error('Naver 뉴스 수집 실패:', err.message);
-    res.status(500).json({ error: '뉴스 수집 실패', details: err.message });
+    console.error('Naver 뉴스 수집 실패:', err.message)
+    res.status(500).json({ error: '뉴스 수집 실패', details: err.message })
   }
-});
+})
+
 
 export default router;
