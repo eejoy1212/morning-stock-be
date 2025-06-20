@@ -22,7 +22,7 @@ model Sector {
   name      String
   userId    String
   user      User     @relation(fields: [userId], references: [id])
-  stocks    Stock[]
+  stocks  Stock[]  @relation("SectorStocks")
   createdAt DateTime @default(now())
 }
 
@@ -30,8 +30,8 @@ model Stock {
   id        String   @id @default(cuid())
   name      String
   code      String
-  sectorId  String
-  sector    Sector   @relation(fields: [sectorId], references: [id])
+ sector   Sector   @relation("SectorStocks", fields: [sectorId], references: [id], onDelete: Cascade)
+  sectorId String
 }
 model DailyPrice {
   id     String   @id @default(cuid())

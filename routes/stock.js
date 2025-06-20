@@ -29,6 +29,70 @@ function authenticateToken(req, res, next) {
  *   name: Stock
  *   description: 섹터에 종목 등록/삭제/조회
  */
+/**
+ * @swagger
+ * /api/stock/search-company:
+ *   get:
+ *     summary: 회사명 또는 종목코드로 주식 검색
+ *     tags: [Stock]
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: 검색어 (회사명 또는 종목코드 일부)
+ *     responses:
+ *       200:
+ *         description: 검색 결과 리스트
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 stocks:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                       code:
+ *                         type: string
+ *                       market:
+ *                         type: string
+ */
+router.get('/search-company', async (req, res) => {
+  const { q } = req.query;
+
+  console.log('✅ 요청 도착:', q);
+
+  if (!q || typeof q !== 'string') {
+    return res.status(400).json({ success: false, error: '검색어(q)가 필요합니다.' });
+  }
+
+  try {
+    const results = await prisma.tickerInfo.findMany({
+      where: {
+        OR: [
+          { name: { contains: q, } },
+          { code: { contains: q } }
+        ]
+      },
+      take: 50,
+      orderBy: { name: 'asc' },
+    });
+
+    console.log('📦 검색 결과:', results.length);
+
+    res.json({ success: true, stocks: results });
+  } catch (err) {
+    console.error('❌ 검색 실패:', err);
+    res.status(500).json({ success: false, error: '검색 실패', details: err.message });
+  }
+});
 
 /**
  * @swagger
@@ -170,4 +234,6 @@ console.log(rows)
     res.status(500).json({ error: 'KRX 수집 실패', details: err.message });
   }
 });
+
+
 export default router;

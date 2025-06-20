@@ -65,28 +65,233 @@ router.post('/', authenticateToken, async (req, res) => {
     res.status(500).json({ error: '섹터 생성 실패', details: err.message });
   }
 });
+/**
+ * @swagger
+ * /api/sector/full:
+ *   post:
+ *     summary: 섹터 생성 + 종목들 등록
+ *     tags: [Sector]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, stocks]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "2차전지"
+ *               stocks:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required: [name, code]
+ *                   properties:
+ *                     name:
+ *                       type: string
+ *                       example: "엘앤에프"
+ *                     code:
+ *                       type: string
+ *                       example: "066970"
+ *     responses:
+ *       200:
+ *         description: 생성된 섹터 + 등록된 종목들 반환
+ */
+router.post('/full', authenticateToken, async (req, res) => {
+  const { name, stocks } = req.body;
+
+  if (!name || !Array.isArray(stocks)) {
+    return res.status(400).json({ error: 'name과 stocks 배열이 필요합니다.' });
+  }
+
+  try {
+    const sector = await prisma.sector.create({
+      data: {
+        name,
+        userId: req.userId,
+        stocks: {
+          create: stocks.map((stock) => ({
+            name: stock.name,
+            code: stock.code,
+          })),
+        },
+      },
+      include: { stocks: true },
+    });
+
+    res.json({ success: true, sector });
+  } catch (err) {
+    console.error('섹터 생성 실패:', err);
+    res.status(500).json({ error: '섹터 생성 실패', details: err.message });
+  }
+});
 
 /**
  * @swagger
  * /api/sector:
  *   get:
- *     summary: 섹터 목록 조회
+ *     summary: 섹터 목록 조회 (페이지네이션 지원)
  *     tags: [Sector]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: 현재 페이지 번호
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: 한 페이지당 항목 수
  *     responses:
  *       200:
  *         description: 섹터 리스트 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 total:
+ *                   type: integer
+ *                 page:
+ *                   type: integer
+ *                 limit:
+ *                   type: integer
+ *                 sectors:
+ *                   type: array
+ *                   items:
+ *                     type: object
  */
 router.get('/', authenticateToken, async (req, res) => {
+  const page = parseInt(req.query.page)|| 1;
+  const limit = parseInt(req.query.limit)|| 10;
+  const skip = (page - 1) * limit;
+
   try {
-    const sectors = await prisma.sector.findMany({
-      where: { userId: req.userId },
-      include: { stocks: true },
+    const [sectors, total] = await Promise.all([
+      prisma.sector.findMany({
+        where: { userId: req.userId },
+        include: { stocks: true },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.sector.count({
+        where: { userId: req.userId }
+      })
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      page,
+      limit,
+      sectors,
     });
-    res.json({ success: true, sectors });
   } catch (err) {
     res.status(500).json({ error: '섹터 조회 실패', details: err.message });
+  }
+});
+/**
+ * @swagger
+ * /api/sector/{id}:
+ *   put:
+ *     summary: 섹터 이름 및 포함 종목 수정
+ *     tags: [Sector]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         description: 수정할 섹터 ID
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               stocks:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     name:
+ *                       type: string
+ *                     code:
+ *                       type: string
+ *     responses:
+ *       200:
+ *         description: 수정된 섹터 반환
+ */
+router.put('/:id', authenticateToken, async (req, res) => {
+  const sectorId = req.params.id;
+  const { name, stocks } = req.body;
+
+  if (!name) {
+    return res.status(400).json({ error: 'name 값이 필요합니다.' });
+  }
+
+  try {
+    // 0. 소유자 확인
+    const sector = await prisma.sector.findFirst({
+      where: { id: sectorId, userId: req.userId },
+    });
+
+    if (!sector) {
+      return res.status(404).json({ error: '섹터를 찾을 수 없습니다.' });
+    }
+
+    // 1. 섹터 이름 수정
+    await prisma.sector.update({
+      where: { id: sectorId },
+      data: { name },
+    });
+
+    // 2. 기존 종목 삭제
+    await prisma.stock.deleteMany({
+      where: { sectorId },
+    });
+
+    // 3. 새로운 종목 추가
+    if (Array.isArray(stocks) && stocks.length > 0) {
+      const stockData = stocks.map((s) => ({
+        name: s.name,
+        code: s.code,
+        sectorId,
+      }));
+
+      await prisma.stock.createMany({
+        data: stockData,
+      });
+    }
+
+    // ✅ 4. 다시 조회하여 최신 정보 반환 (name 포함)
+    const fullSector = await prisma.sector.findUnique({
+      where: { id: sectorId },
+      include: { stocks: true },
+    });
+
+    res.json({ success: true, sector: fullSector });
+  } catch (err) {
+    console.error('섹터 수정 실패:', err);
+    res.status(500).json({ error: '섹터 수정 실패', details: err.message });
   }
 });
 
