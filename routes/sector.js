@@ -128,16 +128,21 @@ router.post('/full', authenticateToken, async (req, res) => {
     res.status(500).json({ error: '섹터 생성 실패', details: err.message });
   }
 });
-
 /**
  * @swagger
  * /api/sector:
  *   get:
- *     summary: 섹터 목록 조회 (페이지네이션 지원)
+ *     summary: 섹터 목록 조회 (검색 및 페이지네이션 지원)
  *     tags: [Sector]
  *     security:
  *       - bearerAuth: []
  *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: 검색어 (섹터명, 종목명 또는 종목코드)
  *       - in: query
  *         name: page
  *         required: false
@@ -154,7 +159,7 @@ router.post('/full', authenticateToken, async (req, res) => {
  *         description: 한 페이지당 항목 수
  *     responses:
  *       200:
- *         description: 섹터 리스트 반환
+ *         description: 필터링된 섹터 리스트 반환
  *         content:
  *           application/json:
  *             schema:
@@ -174,22 +179,44 @@ router.post('/full', authenticateToken, async (req, res) => {
  *                     type: object
  */
 router.get('/', authenticateToken, async (req, res) => {
-  const page = parseInt(req.query.page)|| 1;
-  const limit = parseInt(req.query.limit)|| 10;
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
+  const q = req.query.q?.toString().trim() || '';
 
   try {
+const loweredQuery = q.toLowerCase(); // q는 .trim() 처리한 상태
+
+// Prisma 쿼리
+const whereCondition = {
+  userId: req.userId,
+  ...(q && {
+    OR: [
+      { name: { contains: loweredQuery } },
+      {
+        stocks: {
+          some: {
+            OR: [
+              { name: { contains: loweredQuery } },
+              { code: { contains: loweredQuery } }
+            ]
+          }
+        }
+      }
+    ]
+  })
+};
+
+
     const [sectors, total] = await Promise.all([
       prisma.sector.findMany({
-        where: { userId: req.userId },
+        where: whereCondition,
         include: { stocks: true },
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.sector.count({
-        where: { userId: req.userId }
-      })
+      prisma.sector.count({ where: whereCondition })
     ]);
 
     res.json({
@@ -200,6 +227,7 @@ router.get('/', authenticateToken, async (req, res) => {
       sectors,
     });
   } catch (err) {
+    console.error('섹터 조회 실패:', err);
     res.status(500).json({ error: '섹터 조회 실패', details: err.message });
   }
 });
