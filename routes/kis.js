@@ -1,16 +1,35 @@
 import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import dayjs from 'dayjs';
+import https from 'https';
+import Bottleneck from 'bottleneck';
+import isSameOrBefore from 'dayjs/plugin/isSameOrBefore.js';
+import cron from 'node-cron';
+dayjs.extend(isSameOrBefore);
 dotenv.config();
 const router = express.Router();
 const KIS_API_BASE = 'https://openapi.koreainvestment.com:9443';
 const APP_KEY = process.env.KIS_APP_KEY;
 const APP_SECRET = process.env.KIS_APP_SECRET;
 import { PrismaClient } from '@prisma/client';
+
 const prisma = new PrismaClient();
-let accessToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ0b2tlbiIsImF1ZCI6ImIxMjI2Y2UyLWEzZGEtNDQwNy04M2RmLWIzYjE4YTJhYzcyNCIsInByZHRfY2QiOiIiLCJpc3MiOiJ1bm9ndyIsImV4cCI6MTc1MDU0MDMwNiwiaWF0IjoxNzUwNDUzOTA2LCJqdGkiOiJQUzIwS1FaRHNiTTc5M3NqalBjOXE0THEzQzJmbnJ1Vm93WHgifQ.Noo2AFrEVm21q7FagKWilgmJ8q0Hil8AfyZ92z6kpnh6ezkAqkarUlO5FzILUVXid0hX3MCvkbTfN-U5nqOykg';
+let accessToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ0b2tlbiIsImF1ZCI6IjQ2ZjE1NGY2LTVjOWMtNDU0MS1hMWE2LWI0NzljNjQzMGIxMSIsInByZHRfY2QiOiIiLCJpc3MiOiJ1bm9ndyIsImV4cCI6MTc1MDkwODkzMSwiaWF0IjoxNzUwODIyNTMxLCJqdGkiOiJQUzIwS1FaRHNiTTc5M3NqalBjOXE0THEzQzJmbnJ1Vm93WHgifQ.C470ShXFjDsHF_aEDM47FMGfNeFs1XUEik-2_forU4xHYHhyGXy3kxl6MpBrZxPBAA-sHAKX4O_jgTQqJJuPPQ';
 // let accessToken = '';
 let tokenExpiresAt = null; // 타임스탬프로 저장
+async function retryRequest(fn, retries = 3, delay = 1000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      console.warn(`🔁 재시도 ${i + 1}/${retries} 후 딜레이 ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 //Swagger에 노출된 /kis/token 경로는 테스트용으로만 쓰고, 서비스에서는 내부 함수로만 사용하세요.
 export async function getAccessToken() {
 //   const now = Date.now();
@@ -232,92 +251,7 @@ console.log('🔍 전체 응답:', response.data);
   }
 });
 
-/**
- * @swagger
- * /api/kis/top-marketcap:
- *   get:
- *     summary: 국내주식 시가총액 상위 종목 조회 (실전 계좌 전용)
- *     tags: [KIS]
- *     parameters:
- *       - in: query
- *         name: market
- *         required: false
- *         schema:
- *           type: string
- *           enum: [J, Q]
- *           default: J
- *         description: "시장 구분 코드 (J: 코스피, Q: 코스닥)"
- *     responses:
- *       200:
- *         description: 시가총액 상위 종목 리스트 반환
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   stck_shrn_iscd:
- *                     type: string
- *                     description: 단축 종목코드
- *                     example: "005930"
- *                   hts_kor_isnm:
- *                     type: string
- *                     description: 종목명
- *                     example: "삼성전자"
- *                   mrkt_tot_amt:
- *                     type: string
- *                     description: "시가총액 (단위: 원)"
- *                     example: "489000000000000"
- *       500:
- *         description: 시가총액 순위 조회 실패
- */
 
-router.get('/top-marketcap', async (req, res) => {
-  try {
-    const accessToken = await getAccessToken();
-    const marketCode = req.query.market || 'J'; // 'J': 코스피, 'Q': 코스닥
-
-    const response = await axios.get(`${KIS_API_BASE}/uapi/domestic-stock/v1/ranking/market-value`, {
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        authorization: `Bearer ${accessToken}`,
-        appkey: APP_KEY,
-        appsecret: APP_SECRET,
-        tr_id: 'FHPST01790000', // 실전계좌용 시가총액 랭킹 조회
-        custtype: 'P',
-      },
-      params: {
-        fid_cond_mrkt_div_code: marketCode,     // 시장 구분 (J: 코스피, Q: 코스닥)
-        fid_cond_scr_div_code: '20174',         // 시가총액 기준 코드
-        fid_div_cls_code: '0',                  // 분할 구분 (0: 전체)
-        fid_input_iscd: '0000',                 // 종목코드 (전체)
-        fid_trgt_cls_code: '0',                 // 대상 분류 (0: 전체)
-        fid_trgt_exls_cls_code: '0',            // 제외대상 분류 (0: 없음)
-        fid_input_price_1: '',                  // 가격범위 시작값 (선택)
-        fid_input_price_2: '',                  // 가격범위 종료값 (선택)
-        fid_vol_cnt: '',                        // 거래량 기준 필터 (선택)
-      }
-    });
-
-    const output = response.data.output;
-
-    if (!Array.isArray(output)) {
-      console.warn('❗ 시가총액 순위 응답 이상:', response.data);
-      return res.status(500).json({ error: 'KIS 응답 이상', raw: response.data });
-    }
-
-    console.log('✅ 시가총액 Top 5:');
-    output.slice(0, 5).forEach((item, i) => {
-      console.log(`${i + 1}. ${item.hts_kor_isnm} (${item.stck_shrn_iscd}) - 시총: ${item.mrkt_tot_amt}`);
-    });
-
-    res.json(output);
-  } catch (err) {
-    console.error('시가총액 순위 조회 실패:', err.response?.data || err.message);
-    res.status(500).json({ error: '시가총액 순위 조회 실패', details: err.message });
-  }
-});
 
 /**
  * @swagger
@@ -926,6 +860,830 @@ console.log('일자별 시세 조회 응답:', output);
   } catch (err) {
     console.error('❌ 일자별 시세 조회 실패:', err.response?.data || err.message);
     res.status(500).json({ error: '일자별 시세 조회 실패', details: err.message });
+  }
+});
+/**
+ * @swagger
+ * /api/kis/itemchart-price:
+ *   get:
+ *     summary: 기간별 주가 차트 데이터 조회 (실전 계좌 전용)
+ *     tags: [KIS]
+ *     parameters:
+ *       - in: query
+ *         name: ticker
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "005930"
+ *         description: 종목 코드 (단축 코드)
+ *       - in: query
+ *         name: fromDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "20240101"
+ *         description: 조회 시작일 (YYYYMMDD)
+ *       - in: query
+ *         name: toDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "20240623"
+ *         description: 조회 종료일 (YYYYMMDD)
+ *       - in: query
+ *         name: period
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [D, W, M]
+ *           default: D
+ *         description: 조회 주기 코드 D 일간 W 주간 M 월간
+ *       - in: query
+ *         name: adjust
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: ["0", "1"]
+ *           default: "0"
+ *         description: "수정주가 여부 (0: 반영, 1: 미반영)"
+ *     responses:
+ *       200:
+ *         description: 기간별 주가 차트 데이터
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   stck_bsop_date:
+ *                     type: string
+ *                     example: "20240620"
+ *                   stck_oprc:
+ *                     type: string
+ *                     example: "80200"
+ *                   stck_hgpr:
+ *                     type: string
+ *                     example: "80800"
+ *                   stck_lwpr:
+ *                     type: string
+ *                     example: "79800"
+ *                   stck_clpr:
+ *                     type: string
+ *                     example: "80500"
+ *                   acml_vol:
+ *                     type: string
+ *                     example: "10438212"
+ *                   acml_tr_pbmn:
+ *                     type: string
+ *                     example: "837720000000"
+ *       400:
+ *         description: 필수 파라미터 누락
+ *       500:
+ *         description: 서버 오류 또는 KIS API 실패
+ */
+router.get('/itemchart-price', async (req, res) => {
+  const { ticker, fromDate, toDate, period = 'D', adjust = '0' } = req.query;
+
+  if (!ticker || !fromDate || !toDate) {
+    return res.status(400).json({ error: 'ticker, fromDate, toDate는 필수입니다.' });
+  }
+
+  try {
+    const accessToken = await getAccessToken();
+
+    const response = await axios.get(
+      `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`,
+      {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${accessToken}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST03010100',
+          custtype: 'P',
+        },
+        params: {
+          fid_cond_mrkt_div_code: 'J',      // 'J' = 코스피. 종목코드로 자동 판별되긴 함
+          fid_input_iscd: ticker,
+          fid_input_date_1: fromDate,
+          fid_input_date_2: toDate,
+          fid_period_div_code: period,      // 'D', 'W', 'M'
+          fid_org_adj_prc: adjust           // '0' = 수정주가 반영, '1' = 미반영
+        },
+      }
+    );
+
+    const output = response.data.output2;
+
+    // if (!Array.isArray(output)) {
+    //   console.warn('❗ 응답 데이터 이상:', response.data);
+    //   return res.status(500).json({ error: 'KIS API 응답 형식 오류', raw: response.data });
+    // }
+    /*------------------------각 리턴 값 의미------------------------*/
+// stck_bsop_date	주식 영업일자 (거래일)	"20240126"
+// stck_clpr	종가 (Close Price)	"73400"
+// stck_oprc	시가 (Open Price)	"73700"
+// stck_hgpr	고가 (High Price)	"74500"
+// stck_lwpr	저가 (Low Price)	"73300"
+// acml_vol	누적 거래량 (Volume)	"11160062"
+// acml_tr_pbmn	누적 거래대금 (Transaction Amount, 원)	"824499022832"
+// flng_cls_code	정리매매 구분코드	"00" (정상)
+// prtt_rate	분할비율 (Split Rate)	"0.00"
+// mod_yn	수정 여부 (Y/N)	"N"
+// prdy_vrss_sign	전일 대비 부호 (상승/하락)	"5" = 하락
+// prdy_vrss	전일 대비 등락 가격 (가격 차)	"-700"
+// revl_issu_reas	수정사유(예: 액면분할 등)	""
+    res.json(output);
+  } catch (err) {
+    console.error('📛 KIS 주가 차트 조회 실패:', err.response?.data || err.message);
+    res.status(500).json({
+      error: '주가 차트 데이터 조회 실패',
+      details: err.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/kis/itemchart-price/multi:
+ *   post:
+ *     summary: 섹터별 종목들의 기간별 종가(종가) 데이터 조회
+ *     tags: [KIS]
+ *     description: 섹터명을 키로 갖는 종목 리스트와 기간을 받아, 날짜별 섹터/종목 종가 테이블을 반환합니다.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               tickers:
+ *                 type: object
+ *                 additionalProperties:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                         example: "삼성전자"
+ *                       code:
+ *                         type: string
+ *                         example: "005930"
+ *               startDate:
+ *                 type: string
+ *                 format: date
+ *                 example: "2025-06-13"
+ *               endDate:
+ *                 type: string
+ *                 format: date
+ *                 example: "2025-06-15"
+ *     responses:
+ *       200:
+ *         description: 날짜별 섹터별 종목 종가 데이터 배열 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   date:
+ *                     type: string
+ *                     format: date
+ *                     example: "2025-06-13"
+ *                   stocks:
+ *                     type: object
+ *                     description: 섹터별 종가 데이터
+ *                     additionalProperties:
+ *                       type: object
+ *                       additionalProperties:
+ *                         type: number
+ *                         description: 종가 (정수, 원 단위)
+ *                         example: 58300
+ *       400:
+ *         description: 필수 파라미터 누락
+ *       500:
+ *         description: 서버 내부 오류
+ */
+
+// const httpsAgent = new https.Agent({ keepAlive: true });
+
+// const api = axios.create({
+//   httpsAgent,
+//   timeout: 10000,
+// });
+router.post('/itemchart-price/multi', async (req, res) => {
+  const { tickers, startDate, endDate } = req.body;
+
+  if (!tickers || typeof tickers !== 'object' || !startDate || !endDate) {
+    return res.status(400).json({ error: 'tickers (객체), startDate, endDate는 필수입니다.' });
+  }
+
+  try {
+    const accessToken = await getAccessToken();
+    const resultMap = {}; // { date: { sector: { stock: price } } }
+
+    // 요청 제한 설정: 동시에 최대 5개, 최소 250ms 간격
+    const limiter = new Bottleneck({
+      maxConcurrent: 5,
+      minTime: 250,
+    });
+
+    const tasks = [];
+
+    for (const [sector, stocks] of Object.entries(tickers)) {
+      for (const { name: stockName, code: tickerCode } of stocks) {
+        tasks.push(
+          limiter.schedule(async () => {
+            try {
+              const response = await api.get(
+                `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`,
+                {
+                  headers: {
+                    'content-type': 'application/json; charset=utf-8',
+                    authorization: `Bearer ${accessToken}`,
+                    appkey: APP_KEY,
+                    appsecret: APP_SECRET,
+                    tr_id: 'FHKST03010100',
+                    custtype: 'P',
+                  },
+                  params: {
+                    fid_cond_mrkt_div_code: 'J',
+                    fid_input_iscd: tickerCode,
+                    fid_input_date_1: startDate.replaceAll('-', ''),
+                    fid_input_date_2: endDate.replaceAll('-', ''),
+                    fid_period_div_code: 'D',
+                    fid_org_adj_prc: '0',
+                  },
+                }
+              );
+
+              const output = response.data.output2;
+
+              output.forEach((day) => {
+                const date = `${day.stck_bsop_date.slice(0, 4)}-${day.stck_bsop_date.slice(4, 6)}-${day.stck_bsop_date.slice(6, 8)}`;
+                if (!resultMap[date]) resultMap[date] = {};
+                if (!resultMap[date][sector]) resultMap[date][sector] = {};
+                resultMap[date][sector][stockName] = parseInt(day.stck_clpr, 10);
+              });
+            } catch (err) {
+              console.warn(`⚠️ ${sector} / ${stockName} 조회 실패`, err.response?.data || err.message);
+            }
+          })
+        );
+      }
+    }
+
+    await Promise.all(tasks);
+
+    // 날짜 리스트 생성 (최신순 정렬)
+    const dates = [];
+    let current = dayjs(startDate);
+    const end = dayjs(endDate);
+
+    while (current.isSameOrBefore(end)) {
+      dates.push(current.format('YYYY-MM-DD'));
+      current = current.add(1, 'day');
+    }
+
+    const final = dates
+      .reverse() // 최신순 정렬
+      .filter((date) => resultMap[date] && Object.keys(resultMap[date]).length > 0)
+      .map((date) => ({
+        date,
+        stocks: resultMap[date],
+      }));
+
+    res.json(final);
+  } catch (err) {
+    console.error('📛 전체 주가 데이터 조회 실패:', err.message || err);
+    res.status(500).json({ error: '전체 데이터 조회 실패', details: err.message });
+  }
+});
+/**
+ * @swagger
+ * /api/kis/top-foreign-netbuy-repeat:
+ *   get:
+ *     summary: 외국인 순매수 Top 20 조회 (KIS API 반복 조회 방식, 전체 시장)
+ *     tags: [KIS]
+ *     description: DB에 저장된 KOSPI와 KOSDAQ 종목 전체를 기반으로 단일 종목 KIS API를 반복 호출하여 외국인 순매수 상위 20개 종목을 반환합니다.
+ *     responses:
+ *       200:
+ *         description: 외국인 순매수 상위 20 종목 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   rank:
+ *                     type: number
+ *                     example: 1
+ *                   code:
+ *                     type: string
+ *                     example: "005930"
+ *                   name:
+ *                     type: string
+ *                     example: "삼성전자"
+ *                   foreignNetBuy:
+ *                     type: number
+ *                     example: 123456
+ *                     description: 외국인 순매수 수량
+ *       500:
+ *         description: 서버 오류
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                 details:
+ *                   type: string
+ */
+
+const httpsAgent = new https.Agent({ keepAlive: true });
+
+const api = axios.create({
+  httpsAgent,
+  timeout: 10000,
+});
+
+router.get('/top-foreign-netbuy-repeat', async (req, res) => {
+  try {
+    // ✅ 1. KOSPI + KOSDAQ 종목 전체 조회
+    const tickers = await prisma.tickerInfo.findMany({
+      // where: {
+      //   market: { in: ['KOSPI', 'KOSDAQ'] },
+      // },
+      select: {
+        code: true,
+        name: true,
+      },
+    });
+
+    if (!tickers.length) {
+      return res.status(404).json({ error: 'DB에 저장된 종목이 없습니다.' });
+    }
+
+    // ✅ 2. 토큰 및 제한 설정
+    const accessToken = await getAccessToken();
+    const limiter = new Bottleneck({ maxConcurrent: 5, minTime: 300 });
+
+    const results = [];
+
+    // ✅ 3. 종목별 반복 요청
+    const tasks = tickers.map((stock) =>
+      limiter.schedule(async () => {
+        try {
+          const response = await api.get(
+            `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor`,
+            {
+              headers: {
+                'content-type': 'application/json; charset=utf-8',
+                authorization: `Bearer ${accessToken}`,
+                appkey: APP_KEY,
+                appsecret: APP_SECRET,
+                tr_id: 'FHKST01010900',
+                custtype: 'P',
+              },
+              params: {
+                fid_cond_mrkt_div_code: 'J', // 반드시 'J'로 고정해도 되지만 종목마다 Q일 수도 있음
+                fid_input_iscd: stock.code,
+              },
+            }
+          );
+
+          const out = response.data.output;
+          const last = out[out.length - 1];
+          const foreignBuy = parseInt(last.frgn_ntby_qty || '0', 10);
+console.log(`🔍 ${stock.name}(${stock.code}) 외국인 순매수: ${foreignBuy}`);
+          results.push({
+            code: stock.code,
+            name: stock.name,
+            foreignNetBuy: foreignBuy,
+          });
+        } catch (e) {
+          console.warn(`⚠️ ${stock.name}(${stock.code}) 조회 실패`, e.response?.data || e.message);
+        }
+      })
+    );
+
+    await Promise.all(tasks);
+
+    // ✅ 4. 정렬 및 응답
+    const sorted = results
+      .sort((a, b) => b.foreignNetBuy - a.foreignNetBuy)
+      .slice(0, 20)
+      .map((item, i) => ({ rank: i + 1, ...item }));
+
+    res.json(sorted);
+  } catch (err) {
+    console.error('📛 외국인 순매수 Top20 전체 시장 반복조회 실패:', err.message);
+    res.status(500).json({ error: '외국인 순매수 Top20 전체 조회 실패', details: err.message });
+  }
+});
+/**
+ * @swagger
+ * /api/kis/top-market-cap:
+ *   get:
+ *     summary: 시가총액 상위 30 종목 조회
+ *     tags: [KIS]
+ *     description: KIS Open API를 사용해 시가총액 상위 30종목을 조회합니다.
+ *     responses:
+ *       200:
+ *         description: 시가총액 상위 종목 배열 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   rank:
+ *                     type: number
+ *                     example: 1
+ *                   code:
+ *                     type: string
+ *                     example: "005930"
+ *                   name:
+ *                     type: string
+ *                     example: "삼성전자"
+ *                   marketCap:
+ *                     type: number
+ *                     example: 450000000000
+ *                   price:
+ *                     type: number
+ *                     example: 72500
+ *       500:
+ *         description: 서버 오류
+ */
+/**
+ * @route GET /api/kis/top-market-cap
+ * @desc KIS API를 사용하여 시가총액 상위 30 종목 반환
+ */
+
+router.get('/top-market-cap', async (req, res) => {
+  try {
+    const accessToken = await getAccessToken();
+
+    const response = await axios.get(
+      `${KIS_API_BASE}/uapi/domestic-stock/v1/ranking/market-cap`,
+      {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${accessToken}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST03010100',
+          custtype: 'P',
+        },
+        params: {
+          // fid_org_adj_prc: '0', // 원본 기준가 사용 여부 (보통 '0')
+             fid_cond_mrkt_div_code: "J",
+            fid_input_date_1: "20250411",
+            fid_input_date_2: "20250509",
+            fid_input_iscd: "",
+            fid_org_adj_prc: "0",
+            fid_period_div_code: "D"
+
+        },
+      }
+    );
+console.log('📡 시가총액 조회 응답:', response.data);
+  const summary = response.data.output1 || {};
+const rawList = response.data.output2 || [];
+
+const result = [
+  {
+    rank: 1,
+    code: summary.stck_shrn_iscd,
+    name: summary.hts_kor_isnm,
+    closePrice: parseInt(summary.stck_prpr || '0', 10),
+    marketCap: parseInt(summary.hts_avls || '0', 10),
+    volume: parseInt(summary.acml_vol || '0', 10),
+  },
+  ...rawList.slice(0, 29).map((item, i) => ({
+    rank: i + 2,
+    code: item.stck_shrn_iscd || '',
+    name: item.hts_kor_isnm || '',
+    closePrice: parseInt(item.stck_clpr || '0', 10),
+    marketCap: parseInt(item.acml_tr_pbmn || '0', 10),
+    volume: parseInt(item.acml_vol || '0', 10),
+  })),
+];
+
+    res.json(result);
+  } catch (err) {
+    console.error('📛 시가총액 조회 실패:', err.message || err);
+    res.status(500).json({ error: '시가총액 조회 실패', details: err.message });
+  }
+});
+/**
+ * @swagger
+ * /api/kis/top-100-market-cap:
+ *   get:
+ *     summary: 전체 종목 시가총액 상위 100 조회
+ *     tags: [KIS]
+ *     description: DB에 저장된 전체 종목을 기준으로 개별 조회 후 시가총액 상위 100개 종목을 반환합니다.
+ *     responses:
+ *       200:
+ *         description: 시가총액 기준 상위 100 종목
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   rank:
+ *                     type: number
+ *                   code:
+ *                     type: string
+ *                   name:
+ *                     type: string
+ *                   price:
+ *                     type: number
+ *                   marketCap:
+ *                     type: number
+ *       500:
+ *         description: 서버 오류
+ */
+router.get('/top-100-market-cap', async (req, res) => {
+  const startTime = Date.now(); // 수집 시작 시점
+  console.log(`⏱️ 전체 수집 시작!: ${startTime}초`);
+  try {
+    const accessToken = await getAccessToken();
+
+    const tickers = await prisma.tickerInfo.findMany();
+
+    const limiter = new Bottleneck({ maxConcurrent: 5, minTime: 250 });
+    const result = [];
+
+    const tasks = tickers.map((ticker) =>
+      limiter.schedule(async () => {
+        try {
+          const response = await api.get(
+            `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-price`,
+            {
+              headers: {
+                'content-type': 'application/json; charset=utf-8',
+                authorization: `Bearer ${accessToken}`,
+                appkey: APP_KEY,
+                appsecret: APP_SECRET,
+                tr_id: 'FHKST01010100',
+                custtype: 'P',
+              },
+              params: {
+                fid_cond_mrkt_div_code: 'J',
+                fid_input_iscd: ticker.code,
+              },
+            }
+          );
+
+          const data = response.data.output;
+          result.push({
+            code: ticker.code,
+            name: data.hts_kor_isnm,
+            marketCap: parseInt(data.hts_avls || '0', 10),
+            price: parseInt(data.stck_prpr || '0', 10),
+          });
+        } catch (e) {
+          console.warn(`⚠️ ${ticker.name}(${ticker.code}) 실패:`, e.response?.data || e.message);
+        }
+      })
+    );
+
+    await Promise.all(tasks);
+
+    const endTime = Date.now(); // 수집 완료 시점
+    const elapsed = ((endTime - startTime) / 1000).toFixed(2); // 초 단위
+
+    console.log(`⏱️ 전체 수집 완료! 총 소요 시간: ${elapsed}초`);
+
+    const sorted = result
+      .sort((a, b) => b.marketCap - a.marketCap)
+      .slice(0, 100)
+      .map((item, i) => ({ rank: i + 1, ...item }));
+
+    res.json({ elapsedSeconds: Number(elapsed), data: sorted });
+  } catch (err) {
+    console.error('📛 전체 시가총액 조회 실패:', err.message);
+    res.status(500).json({ error: '전체 시가총액 조회 실패', details: err.message });
+  }
+});
+/*------------- 제대로 되는거 => 시가총액 -------------*/
+
+/**
+ * @swagger
+ * /api/kis/save-top-100-market-cap:
+ *   post:
+ *     summary: 시가총액 상위 100 저장
+ *     tags: [KIS]
+ *     description: DB에 저장된 전체 종목 기준 시가총액 상위 100개를 KIS API로 조회하고 MarketCapRanking 테이블에 저장합니다.
+ *     responses:
+ *       200:
+ *         description: 저장 완료 및 소요 시간 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "상위 100 저장 완료"
+ *                 elapsedSeconds:
+ *                   type: number
+ *                   example: 685.31
+ *       500:
+ *         description: 서버 오류
+ */
+router.post('/save-top-100-market-cap', async (req, res) => {
+  const startTime = Date.now();
+  console.log(`⏱️ 저장 수집 시작!: ${startTime}`);
+
+  const safeBigInt = (val) => {
+    try {
+      return BigInt(val ?? '0');
+    } catch {
+      return BigInt(0);
+    }
+  };
+
+  try {
+    const accessToken = await getAccessToken();
+    const tickers = await prisma.tickerInfo.findMany();
+
+    const limiter = new Bottleneck({ maxConcurrent: 5, minTime: 250 });
+    const result = [];
+
+    // const testTickers = tickers.slice(0, 20);
+    // console.log(`⏱️ 테스트용 수집 대상: ${testTickers.length} 종목`);
+    console.log(`⏱️ 수집 대상: ${tickers.length} 종목`);
+
+    const tasks = tickers.map((ticker) =>
+      limiter.schedule(async () => {
+        try {
+          const response = await retryRequest(() =>
+            api.get(`${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-price`, {
+              headers: {
+                'content-type': 'application/json; charset=utf-8',
+                authorization: `Bearer ${accessToken}`,
+                appkey: APP_KEY,
+                appsecret: APP_SECRET,
+                tr_id: 'FHKST01010100',
+                custtype: 'P',
+              },
+              params: {
+                fid_cond_mrkt_div_code: 'J',
+                fid_input_iscd: ticker.code,
+              },
+            }), 3, 1000
+          );
+
+          const data = response.data.output;
+          console.log(`🔍 ${ticker.name}(${ticker.code}) 시가총액: ${data.hts_avls || '0'}`);
+
+          result.push({
+            code: ticker.code,
+            name: ticker.name,
+            market: data.rprs_mrkt_kor_name ?? 'UNKNOWN',
+            closePrice: parseInt(data.stck_prpr ?? '0', 10),
+            diffPrice: parseInt(data.prdy_vrss ?? '0', 10),
+            diffRate: parseFloat(data.prdy_ctrt ?? '0'),
+            volume: parseInt(data.acml_vol ?? '0', 10),
+            tradeAmount: safeBigInt(data.acml_tr_pbmn),
+            marketCap: safeBigInt(data.hts_avls),
+            marketCapRatio: parseFloat(data.mrkt_tot_amt_rate ?? '0'),
+            sharesOutstanding: safeBigInt(data.lstn_stcn),
+            date: new Date(),
+          });
+        } catch (e) {
+          console.warn(`⚠️ ${ticker.name}(${ticker.code}) 실패:`, e.response?.data || e.message);
+        }
+      })
+    );
+
+    await Promise.all(tasks);
+
+    const sorted = result
+      .sort((a, b) => a.marketCap > b.marketCap ? -1 : 1)
+      .slice(0, 100)
+      .map((item, i) => ({
+        code: item.code,
+        name: item.name,
+        market: item.market,
+        closePrice: item.closePrice,
+        diffPrice: item.diffPrice,
+        diffRate: item.diffRate,
+        volume: item.volume,
+        tradeAmount: item.tradeAmount.toString(),
+        marketCap: item.marketCap.toString(),
+        marketCapRatio: item.marketCapRatio,
+        sharesOutstanding: item.sharesOutstanding.toString(),
+        date: item.date,
+      }));
+
+    await prisma.marketCapRanking.createMany({ data: sorted });
+
+    const endTime = Date.now();
+    const elapsed = ((endTime - startTime) / 1000).toFixed(2);
+
+    res.json({ message: '상위 100 저장 완료', elapsedSeconds: Number(elapsed) });
+  } catch (err) {
+    console.error('📛 저장 실패:', err.message);
+    res.status(500).json({ error: '저장 실패', details: err.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/kis/search-market-cap:
+ *   get:
+ *     summary: 시가총액 검색
+ *     tags: [KIS]
+ *     description: 특정 날짜와 시장 타입(전체, KOSPI, KOSDAQ)에 따라 시가총액 데이터를 조회합니다.
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: "검색할 날짜 (예: 2025-06-23)"
+ *       - in: query
+ *         name: market
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [전체, KOSPI, KOSDAQ]
+ *         description: 시장 타입 (전체는 필터 없음)
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: 페이지 번호
+ *       - in: query
+ *         name: pageSize
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *         description: 페이지당 항목 수
+ *     responses:
+ *       200:
+ *         description: 검색된 시가총액 데이터
+ *       500:
+ *         description: 서버 오류
+ */
+router.get('/search-market-cap', async (req, res) => {
+  try {
+    const { date, market = '전체', page = 1, pageSize = 20 } = req.query;
+    if (!date) return res.status(400).json({ error: '날짜(date) 파라미터는 필수입니다.' });
+
+    const dateObj = new Date(date);
+    const nextDateObj = new Date(dateObj);
+    nextDateObj.setDate(dateObj.getDate() + 1);
+
+    const whereClause = {
+      date: {
+        gte: dateObj,
+        lt: nextDateObj,
+      },
+      ...(market === 'KOSPI' && { market: { contains: 'KOSPI' } }),
+      ...(market === 'KOSDAQ' && { market: { contains: 'KSQ' } }),
+    };
+
+    const allData = await prisma.marketCapRanking.findMany({
+      where: whereClause,
+    });
+
+    // 문자열 marketCap을 BigInt로 정렬
+    const sortedData = allData
+      .sort((a, b) => parseInt(b.marketCap) - parseInt(a.marketCap))
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1,
+      }));
+
+    const skip = (parseInt(page) - 1) * parseInt(pageSize);
+    const paginated = sortedData.slice(skip, skip + parseInt(pageSize));
+
+    res.json({
+      page: parseInt(page),
+      pageSize: parseInt(pageSize),
+      totalCount: sortedData.length,
+      totalPages: Math.ceil(sortedData.length / parseInt(pageSize)),
+      data: paginated,
+    });
+  } catch (err) {
+    console.error('📛 시가총액 검색 실패:', err.message);
+    res.status(500).json({ error: '시가총액 검색 실패', details: err.message });
   }
 });
 

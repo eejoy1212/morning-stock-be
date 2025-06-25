@@ -29,6 +29,21 @@ export function authenticateToken(req, res, next) {
     return res.status(403).json({ error: '유효하지 않은 토큰입니다' });
   }
 }
+export function authenticateTokenOptional(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return next(); // 로그인 안 한 경우
+
+  const token = authHeader.split(' ')[1];
+  if (!token) return next();
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.id;
+  } catch (err) {
+    // 유효하지 않으면 무시하고 넘어감
+  }
+  next();
+}
 
 /**
  * @swagger
@@ -231,6 +246,89 @@ const whereCondition = {
     res.status(500).json({ error: '섹터 조회 실패', details: err.message });
   }
 });
+/**
+ * @swagger
+ * /api/sector/name-only:
+ *   get:
+ *     summary: 섹터명으로만 검색 (단순 검색용)
+ *     tags: [Sector]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: 섹터명 검색어
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: 섹터명으로 검색된 결과
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 total:
+ *                   type: integer
+ *                 page:
+ *                   type: integer
+ *                 limit:
+ *                   type: integer
+ *                 sectors:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ */
+router.get('/name-only', authenticateToken, async (req, res) => {
+  const q = req.query.q?.toString().trim() || '';
+
+  try {
+    const loweredQuery = q.toLowerCase();
+
+    const whereCondition = {
+      userId: req.userId,
+      ...(q && {
+        name: {
+          contains: loweredQuery,
+        }
+      })
+    };
+
+    const sectors = await prisma.sector.findMany({
+      where: whereCondition,
+      include: {
+        stocks: true, // 필요 시 주석 제거
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({
+      success: true,
+      total: sectors.length,
+      sectors,
+    });
+  } catch (err) {
+    console.error('섹터명 검색 실패:', err);
+    res.status(500).json({ error: '섹터명 검색 실패', details: err.message });
+  }
+});
+
+
 /**
  * @swagger
  * /api/sector/{id}:
@@ -507,51 +605,59 @@ async function getOgImage(url) {
 
 
 // 📡 뉴스 라우터
-router.get('/news', authenticateToken, async (req, res) => {
+router.get('/news', authenticateTokenOptional, async (req, res) => {
   try {
-    const sectors = await prisma.sector.findMany({
-      where: { userId: req.userId },
-      include: { stocks: true },
-    })
+    const clientId = process.env.NAVER_CLIENT_ID;
+    const clientSecret = process.env.NAVER_CLIENT_SECRET;
+    const allArticles = [];
 
-    const keywords = [
-      ...new Set(sectors.flatMap(sector => sector.stocks.map(stock => stock.name)))
-    ]
+    // 1. 기본 키워드
+    let keywords = ['주식',"KOSPI","KOSDAQ"];
 
-    const clientId = process.env.NAVER_CLIENT_ID
-    const clientSecret = process.env.NAVER_CLIENT_SECRET
-    const allArticles = []
+    // 2. 로그인한 경우에만 관심종목 키워드로 대체
+    if (req.userId) {
+      const sectors = await prisma.sector.findMany({
+        where: { userId: req.userId },
+        include: { stocks: true },
+      });
+
+      const extracted = [
+        ...new Set(sectors.flatMap(sector => sector.stocks.map(stock => stock.name)))
+      ];
+
+      if (extracted.length > 0) keywords = extracted;
+    }
 
     for (const keyword of keywords) {
-      const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(keyword)}&display=5&sort=date`
+      const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(keyword)}&display=5&sort=date`;
 
       const { data } = await axios.get(url, {
         headers: {
           'X-Naver-Client-Id': clientId,
           'X-Naver-Client-Secret': clientSecret,
         },
-      })
+      });
 
-      if (data.items && data.items.length > 0) {
-        // 각 뉴스에 대해 og:image 추가
+      if (data.items?.length) {
         for (const item of data.items) {
-          const ogImage = await getOgImage(item.link)
+          const ogImage = await getOgImage(item.link);
           allArticles.push({
             ...item,
-            image: ogImage, // 🔗 이미지 추가
-          })
+            image: ogImage,
+          });
         }
       }
 
-      if (allArticles.length > 24) break // 필요 시 개수 제한
+      if (allArticles.length > 24) break;
     }
 
-    res.json({ success: true, articles: allArticles.slice(0, 24) })
+    res.json({ success: true, articles: allArticles.slice(0, 24) });
   } catch (err) {
-    console.error('Naver 뉴스 수집 실패:', err.message)
-    res.status(500).json({ error: '뉴스 수집 실패', details: err.message })
+    console.error('Naver 뉴스 수집 실패:', err.message);
+    res.status(500).json({ error: '뉴스 수집 실패', details: err.message });
   }
-})
+});
+
 
 
 export default router;

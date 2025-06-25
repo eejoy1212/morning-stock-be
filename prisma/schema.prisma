@@ -49,3 +49,22 @@ model TickerInfo {
   createdAt DateTime @default(now())
   market String @default("")// "KOSDAQ" or "KOSPI"
 }
+model MarketCapRanking {
+  id         String   @id @default(cuid())
+  code       String              // 종목 코드
+  name       String              // 종목명
+  market     String              // 시장 구분 (예: KOSPI, KOSDAQ)
+  closePrice Int                 // 종가
+  diffPrice  Int                 // 전일대비 등락
+  diffRate   Float               // 전일대비 등락률
+  volume     Int                 // 거래량
+  tradeAmount String             // 거래대금
+  marketCap  String              // 시가총액
+  marketCapRatio Float           // 시가총액 비중(%)
+  sharesOutstanding String       // 유통주식수
+  date       DateTime            // 수집 일자 (날짜 기준, 예: 2025-06-23)
+  createdAt  DateTime @default(now())
+
+  @@index([date])
+  @@index([code, date])
+}
