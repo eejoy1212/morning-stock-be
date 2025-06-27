@@ -15,7 +15,7 @@ const APP_SECRET = process.env.KIS_APP_SECRET;
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
-let accessToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ0b2tlbiIsImF1ZCI6IjQ2ZjE1NGY2LTVjOWMtNDU0MS1hMWE2LWI0NzljNjQzMGIxMSIsInByZHRfY2QiOiIiLCJpc3MiOiJ1bm9ndyIsImV4cCI6MTc1MDkwODkzMSwiaWF0IjoxNzUwODIyNTMxLCJqdGkiOiJQUzIwS1FaRHNiTTc5M3NqalBjOXE0THEzQzJmbnJ1Vm93WHgifQ.C470ShXFjDsHF_aEDM47FMGfNeFs1XUEik-2_forU4xHYHhyGXy3kxl6MpBrZxPBAA-sHAKX4O_jgTQqJJuPPQ';
+let accessToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ0b2tlbiIsImF1ZCI6ImYxNzQ0ZGIyLTljYTktNDZkMi1iYmQzLWEzYzcyNTcxNWU3ZSIsInByZHRfY2QiOiIiLCJpc3MiOiJ1bm9ndyIsImV4cCI6MTc1MTE0MTQxNiwiaWF0IjoxNzUxMDU1MDE2LCJqdGkiOiJQUzIwS1FaRHNiTTc5M3NqalBjOXE0THEzQzJmbnJ1Vm93WHgifQ.z8HohvExwR5Eyd_tZdnNnxx_AVC-cbZQUJg9jXNlkyV8u4Q7xHpin38vvAVxjBEJtx8un4ndhvExrmicBtS0FA';
 // let accessToken = '';
 let tokenExpiresAt = null; // 타임스탬프로 저장
 async function retryRequest(fn, retries = 3, delay = 1000) {
@@ -1479,11 +1479,11 @@ router.get('/top-100-market-cap', async (req, res) => {
 
 /**
  * @swagger
- * /api/kis/save-top-100-market-cap:
+ * /api/kis/save-market-cap:
  *   post:
- *     summary: 시가총액 상위 100 저장
+ *     summary: 시가총액과 등락률 등 티커코드에 있는 기업목록대로 저장
  *     tags: [KIS]
- *     description: DB에 저장된 전체 종목 기준 시가총액 상위 100개를 KIS API로 조회하고 MarketCapRanking 테이블에 저장합니다.
+ *     description: DB에 저장된 전체 종목 기준 시가총액을 KIS API로 조회하고 MarketCapRanking 테이블에 저장합니다.
  *     responses:
  *       200:
  *         description: 저장 완료 및 소요 시간 반환
@@ -1501,7 +1501,7 @@ router.get('/top-100-market-cap', async (req, res) => {
  *       500:
  *         description: 서버 오류
  */
-router.post('/save-top-100-market-cap', async (req, res) => {
+router.post('/save-market-cap', async (req, res) => {
   const startTime = Date.now();
   console.log(`⏱️ 저장 수집 시작!: ${startTime}`);
 
@@ -1571,7 +1571,7 @@ router.post('/save-top-100-market-cap', async (req, res) => {
 
     const sorted = result
       .sort((a, b) => a.marketCap > b.marketCap ? -1 : 1)
-      .slice(0, 100)
+      // .slice(0, 100)
       .map((item, i) => ({
         code: item.code,
         name: item.name,
@@ -1592,7 +1592,7 @@ router.post('/save-top-100-market-cap', async (req, res) => {
     const endTime = Date.now();
     const elapsed = ((endTime - startTime) / 1000).toFixed(2);
 
-    res.json({ message: '상위 100 저장 완료', elapsedSeconds: Number(elapsed) });
+    res.json({ message: '시가총액,등락률 등 순위 화면에서 필요한 것 저장 완료', elapsedSeconds: Number(elapsed) });
   } catch (err) {
     console.error('📛 저장 실패:', err.message);
     res.status(500).json({ error: '저장 실패', details: err.message });
@@ -1686,5 +1686,138 @@ router.get('/search-market-cap', async (req, res) => {
     res.status(500).json({ error: '시가총액 검색 실패', details: err.message });
   }
 });
+/**
+ * @swagger
+ * /api/kis/top-gainers:
+ *   get:
+ *     summary: 오늘의 급등 종목 Top 20
+ *     tags: [KIS]
+ *     description: 등락률 기준으로 가장 많이 상승한 20개 종목을 반환합니다.
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: "검색할 날짜 (예: 2025-06-23)"
+ *       - in: query
+ *         name: market
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [전체, KOSPI, KOSDAQ]
+ *         description: 시장 필터
+ *     responses:
+ *       200:
+ *         description: 등락률 기준 상위 20개 종목
+ *       500:
+ *         description: 서버 오류
+ */
+router.get('/top-gainers', async (req, res) => {
+  try {
+    const { date, market = '전체' } = req.query;
+    if (!date) return res.status(400).json({ error: '날짜(date) 파라미터는 필수입니다.' });
+
+    const dateObj = new Date(date);
+    const nextDateObj = new Date(dateObj);
+    nextDateObj.setDate(dateObj.getDate() + 1);
+
+    const whereClause = {
+      date: {
+        gte: dateObj,
+        lt: nextDateObj,
+      },
+      ...(market === 'KOSPI' && { market: { contains: 'KOSPI' } }),
+      ...(market === 'KOSDAQ' && { market: { contains: 'KSQ' } }),
+    };
+
+    const allData = await prisma.marketCapRanking.findMany({
+      where: whereClause,
+    });
+
+    const topGainers = allData
+      .sort((a, b) => b.diffRate - a.diffRate) // 등락률 내림차순
+      .slice(0, 20) // 상위 20개만
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1,
+      }));
+
+    res.json({ data: topGainers });
+  } catch (err) {
+    console.error('📛 급등 종목 조회 실패:', err.message);
+    res.status(500).json({ error: '급등 종목 조회 실패', details: err.message });
+  }
+});
+/**
+ * @swagger
+ * /api/kis/top-trade-amount:
+ *   get:
+ *     summary: 오늘의 거래대금 상위 20 종목
+ *     tags: [KIS]
+ *     description: 거래대금 기준으로 가장 높은 20개 종목을 반환합니다.
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: "검색할 날짜 (예: 2025-06-23)"
+ *       - in: query
+ *         name: market
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [전체, KOSPI, KOSDAQ]
+ *         description: 시장 필터
+ *     responses:
+ *       200:
+ *         description: 거래대금 기준 상위 20개 종목
+ *       500:
+ *         description: 서버 오류
+ */
+router.get('/top-trade-amount', async (req, res) => {
+  try {
+    const { date, market = '전체' } = req.query;
+    if (!date) return res.status(400).json({ error: '날짜(date) 파라미터는 필수입니다.' });
+
+    const dateObj = new Date(date);
+    const nextDateObj = new Date(dateObj);
+    nextDateObj.setDate(dateObj.getDate() + 1);
+
+    const whereClause = {
+      date: {
+        gte: dateObj,
+        lt: nextDateObj,
+      },
+      ...(market === 'KOSPI' && { market: { contains: 'KOSPI' } }),
+      ...(market === 'KOSDAQ' && { market: { contains: 'KSQ' } }),
+    };
+
+    const allData = await prisma.marketCapRanking.findMany({
+      where: whereClause,
+    });
+
+    const topByTradeAmount = allData
+      .sort((a, b) => {
+        const aVal = BigInt(typeof a.tradeAmount === 'string' ? a.tradeAmount : a.tradeAmount.toString());
+        const bVal = BigInt(typeof b.tradeAmount === 'string' ? b.tradeAmount : b.tradeAmount.toString());
+        return bVal > aVal ? 1 : -1;
+      })
+      .slice(0, 20)
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1,
+      }));
+
+    res.json({ data: topByTradeAmount });
+  } catch (err) {
+    console.error('📛 거래대금 상위 종목 조회 실패:', err.message);
+    res.status(500).json({ error: '거래대금 상위 종목 조회 실패', details: err.message });
+  }
+});
+
 
 export default router;
