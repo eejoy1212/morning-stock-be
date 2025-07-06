@@ -1,13 +1,13 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import axios from 'axios';
-import dotenv from 'dotenv';
 import dayjs from 'dayjs';
 import https from 'https';
 import Bottleneck from 'bottleneck';
 import isSameOrBefore from 'dayjs/plugin/isSameOrBefore.js';
 import cron from 'node-cron';
 dayjs.extend(isSameOrBefore);
-dotenv.config();
 const router = express.Router();
 const KIS_API_BASE = 'https://openapi.koreainvestment.com:9443';
 const APP_KEY = process.env.KIS_APP_KEY;
