@@ -240,7 +240,8 @@ console.log(email)
           name,
           // profileImage,
           password: await bcrypt.hash("kakao-login", 10), // 더미 비밀번호
-          type:"kakao"
+          type:"kakao",
+          sectors:[]
         },
       });
     }
