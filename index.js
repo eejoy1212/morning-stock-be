@@ -11,15 +11,24 @@ import { swaggerUi, specs } from './swagger.js';
 
 dotenv.config();
 const app = express();
-const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app'; // 프론트 주소
+const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app';
+// 프론트 주소
 
-
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://morning-stock-web.vercel.app',
+];
 const PORT = process.env.PORT || 4000;
 app.use(cors({
-  origin: FRONTEND_ORIGIN,
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
-
 app.use(express.json());
 
 app.get('/', (req, res) => {
