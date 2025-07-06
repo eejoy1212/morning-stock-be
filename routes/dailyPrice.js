@@ -237,7 +237,7 @@ router.delete('/clear', async (req, res) => {
 
 // cron 매일 오후 5시 실행
 cron.schedule('0 17 * * *', async () => {
-  console.log('🕔 [CRON] 일별 종가 수집 시작');
+  console.log('🕔 [CRON 17:00 PM] collect start : daily closePrice');
   try {
     const response = await fetch('http://localhost:4000/api/daily-price/collect', {
       method: 'POST',
@@ -246,7 +246,7 @@ cron.schedule('0 17 * * *', async () => {
     const result = await response.json();
     console.log('✅ 수집 완료:', result);
   } catch (err) {
-    console.error('CRON 요청 실패:', err.message);
+    console.error('🕔 [CRON 17:00 PM] collect fail : daily closePrice', err.message);
   }
 });
 

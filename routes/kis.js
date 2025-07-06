@@ -1851,7 +1851,7 @@ router.get('/top-trade-amount', async (req, res) => {
 });
 // cron 매일 오후 5시 실행
 cron.schedule('0 18 * * *', async () => {
-  console.log('🕔 [CRON] 시가 고가 저가 종가 수집');
+  console.log('🕔 [CRON 18:00 PM] collect start : daily marketCap');
   try {
     const response = await fetch('http://localhost:4000/api/kis/save-market-cap', {
       method: 'POST',
@@ -1860,7 +1860,7 @@ cron.schedule('0 18 * * *', async () => {
     const result = await response.json();
     console.log('✅ 수집 완료:', result);
   } catch (err) {
-    console.error('CRON 요청 실패:', err.message);
+    console.error('🕔 [CRON 18:00 PM] collect fail : daily marketCap', err.message);
   }
 });
 
