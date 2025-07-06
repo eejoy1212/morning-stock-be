@@ -1,11 +1,12 @@
 // routes/user.js
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
-import dotenv from 'dotenv';
-dotenv.config();
+
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
