@@ -5,6 +5,8 @@ import jwt from 'jsonwebtoken';
 import dayjs from 'dayjs'
 import axios from 'axios';
 import * as cheerio from 'cheerio'
+import dotenv from 'dotenv';
+dotenv.config(); 
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
