@@ -228,6 +228,7 @@ const REDIRECT_URI=process.env.REDIRECT_URI
 
     const email = kakaoAccount.email;
     const name = kakaoAccount.profile.nickname || "카카오유저";
+    console.log("------------------>>>kakao name : ",name)
 const profileImage = kakaoAccount.profile.profile_image_url || null;
     // 3. DB에 유저가 존재하는지 확인
     let user = await prisma.user.findUnique({ where: { email } });
