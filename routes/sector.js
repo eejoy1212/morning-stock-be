@@ -731,8 +731,12 @@ async function getOgImage(url) {
 // 📡 뉴스 라우터
 router.get('/news', authenticateTokenOptional, async (req, res) => {
   try {
+      console.log('🔥 뉴스 요청됨');
+    
     const clientId = process.env.NAVER_CLIENT_ID;
     const clientSecret = process.env.NAVER_CLIENT_SECRET;
+   console.log('NAVER_CLIENT_ID:', clientId);
+    console.log('NAVER_CLIENT_SECRET:', clientSecret); 
     const allArticles = [];
 
     // 기본 키워드 및 섹터 이름 초기화
@@ -768,11 +772,17 @@ router.get('/news', authenticateTokenOptional, async (req, res) => {
 
       if (data.items?.length) {
         for (const item of data.items) {
-          const ogImage = await getOgImage(item.link);
-          allArticles.push({
+    try {
+      let ogImage = null;
+  ogImage = await getOgImage(item.link); 
+      allArticles.push({
             ...item,
             image: ogImage,
           });
+} catch (e) {
+  console.warn(`OG 이미지 가져오기 실패: ${item.link}`, e.message);
+}
+     
         }
       }
 
@@ -785,7 +795,7 @@ router.get('/news', authenticateTokenOptional, async (req, res) => {
       sectorNames, // 🆕 섹터 이름 리스트 포함
     });
   } catch (err) {
-    console.error('Naver 뉴스 수집 실패:', err.message);
+ console.error('Naver 뉴스 수집 실패:', err);
     res.status(500).json({ error: '뉴스 수집 실패', details: err.message });
   }
 });

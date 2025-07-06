@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+dotenv.config();
 import userRoutes from './routes/user.js';
 import sectorRoutes from './routes/sector.js';
 import stockRoutes from './routes/stock.js';
@@ -9,7 +10,7 @@ import tickerRoutes from './routes/ticker.js';
 import kisRoutes from './routes/kis.js';
 import { swaggerUi, specs } from './swagger.js';
 
-dotenv.config();
+
 const app = express();
 const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app';
 // 프론트 주소
