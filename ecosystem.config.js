@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "morning-stock-backend", // 원하는 앱 이름
+      name: "backend", // 원하는 앱 이름
       script: "index.js", // 백엔드 진입 파일 경로
       instances: 1,
       autorestart: true,

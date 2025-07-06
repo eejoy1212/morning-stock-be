@@ -735,8 +735,8 @@ router.get('/news', authenticateTokenOptional, async (req, res) => {
   try {
       console.log('🔥 뉴스 요청됨');
     
-    const clientId ="NlEQazrU8untNAINY6M6";// process.env.NAVER_CLIENT_ID;
-    const clientSecret = "TBx9QCXAop";//process.env.NAVER_CLIENT_SECRET;
+    const clientId = process.env.NAVER_CLIENT_ID;
+    const clientSecret =process.env.NAVER_CLIENT_SECRET;
    console.log('NAVER_CLIENT_ID:', clientId);
     console.log('NAVER_CLIENT_SECRET:', clientSecret); 
     const allArticles = [];
