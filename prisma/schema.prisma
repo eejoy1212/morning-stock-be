@@ -7,7 +7,10 @@ datasource db {
   provider = "mysql"
   url      = env("DATABASE_URL")
 }
-
+enum UserType {
+  email
+  kakao
+}
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -15,6 +18,7 @@ model User {
   password  String
   createdAt DateTime @default(now())
   sectors   Sector[]
+  type      UserType   @default(email)
 }
 
 model Sector {
@@ -36,7 +40,10 @@ model Stock {
 model DailyPrice {
   id     String   @id @default(cuid())
   name   String
- code   String   @default("")
+  code   String   @default("")
+  open   Int?
+  high   Int?
+  low    Int?
   close  Int
   date   DateTime
   createdAt DateTime @default(now())

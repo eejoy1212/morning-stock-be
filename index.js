@@ -11,7 +11,7 @@ import { swaggerUi, specs } from './swagger.js';
 
 dotenv.config();
 const app = express();
-const FRONTEND_ORIGIN = 'http://localhost:3000'; // 프론트 주소
+const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app'; // 프론트 주소
 
 
 const PORT = process.env.PORT || 4000;

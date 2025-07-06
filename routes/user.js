@@ -3,7 +3,9 @@ import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-
+import axios from 'axios';
+import dotenv from 'dotenv';
+dotenv.config();
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
@@ -175,4 +177,83 @@ router.delete('/delete', async (req, res) => {
 router.post('/logout', (req, res) => {
   res.json({ success: true, message: '클라이언트에서 토큰을 삭제해주세요.' });
 });
+/**
+ * @swagger
+ * /api/user/kakao-login:
+ *   post:
+ *     summary: 카카오 로그인
+ *     tags: [User]
+ *     responses:
+ *       200:
+ *         description: 카카오 로그인 성공
+ */
+router.post("/kakao-login", async (req, res) => {
+  const { code } = req.body;
+const KAKAO_REST_API_KEY=process.env.KAKAO_REST_API_KEY
+console.log("kakao rest api key : ",KAKAO_REST_API_KEY)
+const REDIRECT_URI=process.env.REDIRECT_URI
+  if (!code) {
+    return res.status(400).json({ error: "code가 필요합니다." });
+  }
+
+  try {
+    // 1. Access Token 요청
+    const tokenRes = await axios.post(
+      "https://kauth.kakao.com/oauth/token",
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: KAKAO_REST_API_KEY,
+        redirect_uri: REDIRECT_URI,
+        code,
+      }),
+      {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }
+    );
+
+    const { access_token } = tokenRes.data;
+
+    // 2. 사용자 정보 요청
+    const userRes = await axios.get("https://kapi.kakao.com/v2/user/me", {
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+      },
+    });
+
+    const kakaoAccount = userRes.data.kakao_account;
+    const kakaoId = userRes.data.id;
+
+    if (!kakaoAccount.email) {
+      return res.status(400).json({ error: "이메일 제공이 필요합니다 (카카오 설정 확인)." });
+    }
+
+    const email = kakaoAccount.email;
+    const name = kakaoAccount.profile.nickname || "카카오유저";
+const profileImage = kakaoAccount.profile.profile_image_url || null;
+    // 3. DB에 유저가 존재하는지 확인
+    let user = await prisma.user.findUnique({ where: { email } });
+console.log(email)
+    // 4. 없으면 회원가입 처리
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          email,
+          name,
+          // profileImage,
+          password: await bcrypt.hash("kakao-login", 10), // 더미 비밀번호
+          type:"kakao"
+        },
+      });
+    }
+
+    // 5. JWT 발급
+    const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: "7d" });
+
+    res.json({ success: true, token, user: { id: user.id, email: user.email, name: user.name,profileImage } });
+  } catch (err) {
+    console.error("카카오 로그인 실패:", err.message);
+    res.status(500).json({ error: "카카오 로그인 실패", details: err.message });
+  }
+});
+
 export default router;

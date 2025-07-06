@@ -15,7 +15,7 @@ const APP_SECRET = process.env.KIS_APP_SECRET;
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
-let accessToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ0b2tlbiIsImF1ZCI6ImYxNzQ0ZGIyLTljYTktNDZkMi1iYmQzLWEzYzcyNTcxNWU3ZSIsInByZHRfY2QiOiIiLCJpc3MiOiJ1bm9ndyIsImV4cCI6MTc1MTE0MTQxNiwiaWF0IjoxNzUxMDU1MDE2LCJqdGkiOiJQUzIwS1FaRHNiTTc5M3NqalBjOXE0THEzQzJmbnJ1Vm93WHgifQ.z8HohvExwR5Eyd_tZdnNnxx_AVC-cbZQUJg9jXNlkyV8u4Q7xHpin38vvAVxjBEJtx8un4ndhvExrmicBtS0FA';
+let accessToken = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ0b2tlbiIsImF1ZCI6ImIzNDBlZTBjLWM3ZjQtNDdmZC1iMmE4LWFmZGFlNjFkYjk0OCIsInByZHRfY2QiOiIiLCJpc3MiOiJ1bm9ndyIsImV4cCI6MTc1MTI2NTU2NiwiaWF0IjoxNzUxMTc5MTY2LCJqdGkiOiJQUzIwS1FaRHNiTTc5M3NqalBjOXE0THEzQzJmbnJ1Vm93WHgifQ.dtQcEcb5t-DO7BeZ9tSAfAbpjjektH6CdUvGe2GPxmKPu9kFyXIuZBNRjRMLEklP0j0iPCgK2iSHKZI3ynlmNg';
 // let accessToken = '';
 let tokenExpiresAt = null; // 타임스탬프로 저장
 async function retryRequest(fn, retries = 3, delay = 1000) {
@@ -31,26 +31,57 @@ async function retryRequest(fn, retries = 3, delay = 1000) {
 }
 
 //Swagger에 노출된 /kis/token 경로는 테스트용으로만 쓰고, 서비스에서는 내부 함수로만 사용하세요.
-export async function getAccessToken() {
-//   const now = Date.now();
-//   if (accessToken && tokenExpiresAt && now < tokenExpiresAt) {
-//     console.log('🔑 기존 토큰 사용:', accessToken);
-//     return accessToken;
-//   }
-//  console.log('🔄 새로운 토큰 발급 요청');
-//   const url = `${KIS_API_BASE}/oauth2/tokenP`;
-//   const response = await axios.post(
-//     url,
-//     {
-//       grant_type: 'client_credentials',
-//       appkey: APP_KEY,
-//       appsecret: APP_SECRET,
-//     },
-//     { headers: { 'Content-Type': 'application/json' } }
-//   );
 
-//   accessToken = response.data.access_token;
-//   tokenExpiresAt = now + 23 * 60 * 60 * 1000; // 23시간 후로 만료 시간 설정 (안전마진)
+export async function getAccessToken() {
+  const now = Date.now();
+
+  // 1. 유효한 토큰이 있으면 그대로 사용
+  if (accessToken && tokenExpiresAt && now < tokenExpiresAt) {
+    console.log('🔑 기존 토큰 사용:', accessToken);
+    return accessToken;
+  }
+
+  // 2. 기존 토큰이 있다면 먼저 revoke
+  if (accessToken) {
+    try {
+      console.log('🚫 기존 토큰 폐기 요청');
+      const revokeUrl = `${KIS_API_BASE}/oauth2/revokeP`;
+      await axios.post(
+        revokeUrl,
+        {
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          token: accessToken,
+        },
+        {
+          headers: { 'Content-Type': 'application/json' },
+        }
+      );
+      console.log('✅ 토큰 폐기 성공');
+    } catch (error) {
+      console.warn('⚠️ 토큰 폐기 실패:', error?.response?.data || error.message);
+    }
+  }
+
+  // 3. 토큰 새로 발급
+  console.log('🔄 새로운 토큰 발급 요청');
+  const tokenUrl = `${KIS_API_BASE}/oauth2/tokenP`;
+  const response = await axios.post(
+    tokenUrl,
+    {
+      grant_type: 'client_credentials',
+      appkey: APP_KEY,
+      appsecret: APP_SECRET,
+    },
+    {
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
+
+  accessToken = response.data.access_token;
+  tokenExpiresAt = now + 23 * 60 * 60 * 1000; // 23시간 유효
+  console.log('✅ 새 토큰 발급 완료:', accessToken);
+
   return accessToken;
 }
 /**
@@ -1542,7 +1573,7 @@ router.post('/save-market-cap', async (req, res) => {
                 fid_input_iscd: ticker.code,
               },
             }), 3, 1000
-          );
+          );//
 
           const data = response.data.output;
           console.log(`🔍 ${ticker.name}(${ticker.code}) 시가총액: ${data.hts_avls || '0'}`);
@@ -1716,7 +1747,7 @@ router.get('/search-market-cap', async (req, res) => {
  */
 router.get('/top-gainers', async (req, res) => {
   try {
-    const { date, market = '전체' } = req.query;
+    const { date, market = '전체' , pageSize = 20} = req.query;
     if (!date) return res.status(400).json({ error: '날짜(date) 파라미터는 필수입니다.' });
 
     const dateObj = new Date(date);
@@ -1738,7 +1769,7 @@ router.get('/top-gainers', async (req, res) => {
 
     const topGainers = allData
       .sort((a, b) => b.diffRate - a.diffRate) // 등락률 내림차순
-      .slice(0, 20) // 상위 20개만
+      .slice(0, pageSize) // 상위 20개만
       .map((item, index) => ({
         ...item,
         rank: index + 1,
@@ -1780,7 +1811,7 @@ router.get('/top-gainers', async (req, res) => {
  */
 router.get('/top-trade-amount', async (req, res) => {
   try {
-    const { date, market = '전체' } = req.query;
+    const { date, market = '전체',pageSize=20 } = req.query;
     if (!date) return res.status(400).json({ error: '날짜(date) 파라미터는 필수입니다.' });
 
     const dateObj = new Date(date);
@@ -1806,7 +1837,7 @@ router.get('/top-trade-amount', async (req, res) => {
         const bVal = BigInt(typeof b.tradeAmount === 'string' ? b.tradeAmount : b.tradeAmount.toString());
         return bVal > aVal ? 1 : -1;
       })
-      .slice(0, 20)
+      .slice(0, pageSize)
       .map((item, index) => ({
         ...item,
         rank: index + 1,
@@ -1818,6 +1849,19 @@ router.get('/top-trade-amount', async (req, res) => {
     res.status(500).json({ error: '거래대금 상위 종목 조회 실패', details: err.message });
   }
 });
+// cron 매일 오후 5시 실행
+cron.schedule('0 18 * * *', async () => {
+  console.log('🕔 [CRON] 시가 고가 저가 종가 수집');
+  try {
+    const response = await fetch('http://localhost:4000/api/kis/save-market-cap', {
+      method: 'POST',
+    });
 
+    const result = await response.json();
+    console.log('✅ 수집 완료:', result);
+  } catch (err) {
+    console.error('CRON 요청 실패:', err.message);
+  }
+});
 
 export default router;

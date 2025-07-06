@@ -420,6 +420,129 @@ router.put('/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: '섹터 수정 실패', details: err.message });
   }
 });
+/**
+ * @swagger
+ * /api/sector/monthly-top-sector-trend:
+ *   get:
+ *     summary: 이번 달 가장 많이 오른 섹터의 캔들스틱 데이터
+ *     tags: [Sector]
+ *     responses:
+ *       200:
+ *         description: 주가 추이 반환 (캔들스틱용)
+ */
+router.get('/monthly-top-sector-trend', async (req, res) => {
+  try {
+    console.log("monthly-top-sector-trend>>>")
+    const today = dayjs().startOf('day')
+    const oneMonthAgo = today.subtract(1, 'month')
+
+    // 1. 섹터 중 수익률 높은 섹터 찾기
+    const sectors = await prisma.sector.findMany({
+      include: { stocks: true },
+    })
+
+    const sectorWithRate = []
+
+    for (const sector of sectors) {
+      const rates = []
+
+      for (const stock of sector.stocks) {
+      
+        const prices = await prisma.dailyPrice.findMany({
+          where: {
+            code: stock.code,
+            date: {
+              gte: oneMonthAgo.toDate(),
+              lte: today.toDate(),
+            },
+          },
+          orderBy: { date: 'asc' },
+        })
+
+ //임시로 주석
+        if (prices.length >= 2) {
+          console.log(">>>>>>>>>>>>>>>>> prices : ",prices)
+          const start = prices[0].close
+          const end = prices[prices.length - 1].close
+          const change = ((end - start) / start) * 100
+          rates.push(change)
+        }
+      }
+
+      if (rates.length > 0) {
+        const avgRate = rates.reduce((a, b) => a + b, 0) / rates.length
+        sectorWithRate.push({ ...sector, avgRate })
+      }
+    }
+
+    // if (sectorWithRate.length === 0) {
+    //   return res.status(404).json({ error: '분석 가능한 섹터가 없습니다' })
+    // }
+if (sectorWithRate.length === 0) {
+  return res.json({
+    success: true,
+    sectorName: null,
+    candles: [],
+    max: null,
+    min: null,
+  });
+}
+
+    const topSector = sectorWithRate.sort((a, b) => b.avgRate - a.avgRate)[0]
+ 
+    // 2. 종목별 날짜별 OHLC 평균 구하기
+    const dateMap = new Map()
+
+    for (const stock of topSector.stocks) {
+      const prices = await prisma.dailyPrice.findMany({
+        where: {
+          code: stock.code,
+          date: {
+            gte: oneMonthAgo.toDate(),
+            lte: today.toDate(),
+          },
+        },
+        orderBy: { date: 'asc' },
+      })
+
+      for (const p of prices) {
+        const key = dayjs(p.date).format('YYYY-MM-DD')
+        if (!dateMap.has(key)) {
+          dateMap.set(key, { open: [], high: [], low: [], close: [] })
+        }
+        const entry = dateMap.get(key)
+        entry.open.push(p.open)
+        entry.high.push(p.high)
+        entry.low.push(p.low)
+        entry.close.push(p.close)
+      }
+    }
+
+    const candleList = Array.from(dateMap.entries()).map(([date, values]) => ({
+      time: date,
+      open: Math.round(values.open.reduce((a, b) => a + b, 0) / values.open.length),
+      high: Math.round(values.high.reduce((a, b) => a + b, 0) / values.high.length),
+      low: Math.round(values.low.reduce((a, b) => a + b, 0) / values.low.length),
+      close: Math.round(values.close.reduce((a, b) => a + b, 0) / values.close.length),
+    }))
+
+    candleList.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+
+    const max = candleList.reduce((acc, cur) => (cur.close > acc.close ? cur : acc), candleList[0])
+    const min = candleList.reduce((acc, cur) => (cur.close < acc.close ? cur : acc), candleList[0])
+
+    res.json({
+      success: true,
+      sectorName: topSector.name,
+      candles: candleList,
+      max,
+      min,
+    })
+  } catch (err) {
+    console.error('섹터 캔들 트렌드 실패:', err)
+    res.status(500).json({ error: '섹터 트렌드 조회 실패', details: err.message })
+  }
+})
 
 /**
  * @swagger
@@ -505,6 +628,7 @@ router.get('/monthly-gainers', async (req, res) => {
         })
 
         if (prices.length >= 2) {
+          console.log(prices)
           const start = prices[0].close
           const end = prices[prices.length - 1].close
           const change = ((end - start) / start) * 100
@@ -611,10 +735,11 @@ router.get('/news', authenticateTokenOptional, async (req, res) => {
     const clientSecret = process.env.NAVER_CLIENT_SECRET;
     const allArticles = [];
 
-    // 1. 기본 키워드
-    let keywords = ['주식',"KOSPI","KOSDAQ"];
+    // 기본 키워드 및 섹터 이름 초기화
+    let keywords = ['주식', 'KOSPI', 'KOSDAQ'];
+    let sectorNames= [];
 
-    // 2. 로그인한 경우에만 관심종목 키워드로 대체
+    // 로그인한 경우 관심 종목으로 키워드 대체
     if (req.userId) {
       const sectors = await prisma.sector.findMany({
         where: { userId: req.userId },
@@ -626,6 +751,9 @@ router.get('/news', authenticateTokenOptional, async (req, res) => {
       ];
 
       if (extracted.length > 0) keywords = extracted;
+
+      // 🆕 섹터 이름 추출
+      sectorNames = sectors.map(sector => sector.name);
     }
 
     for (const keyword of keywords) {
@@ -651,13 +779,16 @@ router.get('/news', authenticateTokenOptional, async (req, res) => {
       if (allArticles.length > 24) break;
     }
 
-    res.json({ success: true, articles: allArticles.slice(0, 24) });
+    res.json({
+      success: true,
+      articles: allArticles.slice(0, 24),
+      sectorNames, // 🆕 섹터 이름 리스트 포함
+    });
   } catch (err) {
     console.error('Naver 뉴스 수집 실패:', err.message);
     res.status(500).json({ error: '뉴스 수집 실패', details: err.message });
   }
 });
-
 
 
 export default router;

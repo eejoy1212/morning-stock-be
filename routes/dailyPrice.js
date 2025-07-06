@@ -138,7 +138,7 @@ router.get('/generate', authenticateToken, async (req, res) => {
  * @swagger
  * /api/daily-price/collect:
  *   post:
- *     summary: 전체 TickerInfo 기준 종가 수집 (cron용)
+ *     summary: 전체 TickerInfo 기준 시가/고가/저가/종가 수집 (cron용)
  *     tags: [DailyPrice]
  *     responses:
  *       200:
@@ -153,7 +153,7 @@ router.post('/collect', async (req, res) => {
     const created = [];
 
     for (const ticker of tickers) {
-        console.log(`${ticker.name} 수집 시작`)
+      console.log(`${ticker.name} 수집 시작`);
       const suffixes = ['.KS', '.KQ'];
       let success = false;
 
@@ -162,38 +162,75 @@ router.post('/collect', async (req, res) => {
           const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker.code}${suffix}?interval=1d&range=1d`;
           const { data } = await axios.get(url);
           const result = data?.chart?.result?.[0];
-
-          const closePrice = result?.indicators?.quote?.[0]?.close?.[0];
+          const quote = result?.indicators?.quote?.[0];
           const timestamp = result?.timestamp?.[0];
 
-          if (closePrice !== undefined && timestamp !== undefined) {
-         const formattedDate =dayjs.unix(timestamp).tz('Asia/Seoul').toDate()
+          const openPrice = quote?.open?.[0];
+          const highPrice = quote?.high?.[0];
+          const lowPrice = quote?.low?.[0];
+          const closePrice = quote?.close?.[0];
+
+          if (
+            openPrice !== undefined &&
+            highPrice !== undefined &&
+            lowPrice !== undefined &&
+            closePrice !== undefined &&
+            timestamp !== undefined
+          ) {
+            const formattedDate = dayjs.unix(timestamp).tz('Asia/Seoul').toDate();
 
             await prisma.dailyPrice.create({
               data: {
                 name: ticker.name,
                 code: ticker.code,
-                close: Math.round(closePrice),
                 date: formattedDate,
+                open: Math.round(openPrice),
+                high: Math.round(highPrice),
+                low: Math.round(lowPrice),
+                close: Math.round(closePrice),
               },
             });
+
             created.push(ticker.name);
             success = true;
             break;
           }
         } catch (err) {
-          continue;
+          continue; // 다음 suffix 시도
         }
       }
 
       if (!success) {
-        console.error(`⚠️ ${ticker.code} 종가 수집 실패 (KS/KQ 모두 실패)`);
+        console.error(`⚠️ ${ticker.code} 시세 수집 실패 (KS/KQ 모두 실패)`);
       }
     }
 
     res.json({ success: true, count: created.length });
   } catch (err) {
-    res.status(500).json({ error: '종가 수집 실패', details: err.message });
+    console.error('수집 오류:', err);
+    res.status(500).json({ error: '시세 수집 실패', details: err.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/daily-price/clear:
+ *   delete:
+ *     summary: 모든 일별 종가 데이터를 삭제
+ *     tags: [DailyPrice]
+ *     responses:
+ *       200:
+ *         description: 모든 종가 데이터 삭제 성공
+ *       500:
+ *         description: 서버 오류
+ */
+router.delete('/clear', async (req, res) => {
+  try {
+    const result = await prisma.dailyPrice.deleteMany({});
+    res.json({ success: true, deletedCount: result.count });
+  } catch (err) {
+    console.error('데이터 삭제 실패:', err);
+    res.status(500).json({ error: '종가 데이터 삭제 실패', details: err.message });
   }
 });
 
