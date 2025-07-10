@@ -10,6 +10,7 @@ import stockRoutes from './routes/stock.js';
 import dailyPriceRoutes from './routes/dailyPrice.js';
 import tickerRoutes from './routes/ticker.js';
 import kisRoutes from './routes/kis.js';
+import dailyReportRoutes from './routes/dailyReport.js';
 import { swaggerUi, specs } from './swagger.js';
 
 
@@ -45,6 +46,7 @@ app.use('/api/stock', stockRoutes);
 app.use('/api/daily-price', dailyPriceRoutes);
 app.use('/api/ticker', tickerRoutes);
 app.use('/api/kis', kisRoutes);
+app.use('/api/dailyReport', dailyReportRoutes);
 
 // ⚠️ 반드시 라우터 등록 후에 swagger 설정
 // app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));

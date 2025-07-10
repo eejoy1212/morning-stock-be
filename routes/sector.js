@@ -5,8 +5,8 @@ import jwt from 'jsonwebtoken';
 import dayjs from 'dayjs'
 import axios from 'axios';
 import * as cheerio from 'cheerio'
-import dotenv from 'dotenv';
-dotenv.config(); 
+// import dotenv from 'dotenv';
+// dotenv.config(); 
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
@@ -25,7 +25,9 @@ export function authenticateToken(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    console.log("decoded>>>",decoded.id)
     req.userId = decoded.id;
+       console.log("decoded>>>",decoded)
     next();
   } catch (err) {
     return res.status(403).json({ error: '유효하지 않은 토큰입니다' });
