@@ -21,7 +21,8 @@ const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app';
 const allowedOrigins = [
   'http://localhost:3000',
   'https://morning-stock-web.vercel.app',
-   'https://ju-sung.com'
+   'https://ju-sung.com',
+   'https://www.ju-sung.com'
 ];
 const PORT = process.env.PORT || 4000;
 app.use(cors({
