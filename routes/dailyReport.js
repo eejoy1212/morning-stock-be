@@ -137,15 +137,14 @@ export async function generateAndSendDailyReport(userId) {
   const startDate = dayjs('2025-06-01');
   const user = await prisma.user.findUnique({ where: { id: userId } });
   const email = user?.email;
-  console.log("sending email>>>",email)
   //임시
-  if (email!=="sunbun2179@daum.net"||email!=="lwh961212@gmail.com")return;
+  // if (email!=="sunbun2179@daum.net")return;
+  if (email!=="lwh961212@gmail.com")return;
   if (!email) throw new Error('유저 이메일을 찾을 수 없습니다');
   const sectors = await prisma.sector.findMany({
     where: { userId },
     include: { stocks: true },
   });
-
   const tickers = {};
   for (const sector of sectors) {
     tickers[sector.name] = sector.stocks.map((s) => ({ name: s.name, code: s.code }));
@@ -230,7 +229,7 @@ export async function generateAndSendDailyReport(userId) {
 
   await transporter.sendMail({
     from: process.env.GMAIL_USER,
-    to: email,
+    to:email,
     subject: `[자동 보고서] 일자별 종가 데이터 (${today.format('YYYY-MM-DD')})`,
     text: '첨부된 엑셀 파일을 확인해주세요.',
     attachments: [
@@ -253,23 +252,23 @@ router.post('/generate', authenticateToken, async (req, res) => {
     res.status(500).send({ error: '서버 오류' });
   }
 });
-cron.schedule(
-  '0 6 * * *', // 오전 6시 (KST)
-  async () => {
-    console.log('🕕 [CRON 06:00 KST] daily report start');
-    try {
-      const users = await prisma.user.findMany();
-      for (const user of users) {
-        await generateAndSendDailyReport(user.id);
-      }
-      console.log('✅ 전체 리포트 전송 완료');
-    } catch (err) {
-      console.error('📛 CRON 리포트 전송 실패:', err);
-    }
-  },
-  {
-    timezone: 'Asia/Seoul',
-  }
-);
+// cron.schedule(
+//   '0 6 * * *', // 오전 6시 (KST)
+//   async () => {
+//     console.log('🕕 [CRON 06:00 KST] daily report start');
+//     try {
+//       const users = await prisma.user.findMany();
+//       for (const user of users) {
+//         await generateAndSendDailyReport(user.id);
+//       }
+//       console.log('✅ 전체 리포트 전송 완료');
+//     } catch (err) {
+//       console.error('📛 CRON 리포트 전송 실패:', err);
+//     }
+//   },
+//   {
+//     timezone: 'Asia/Seoul',
+//   }
+// );
 
 export default router;
