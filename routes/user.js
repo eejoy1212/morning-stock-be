@@ -191,6 +191,7 @@ router.post('/logout', (req, res) => {
  */
 router.post("/kakao-login", async (req, res) => {
   const { code } = req.body;
+  console.log("in kakao login code : ",code)
 const KAKAO_REST_API_KEY=process.env.KAKAO_REST_API_KEY
 console.log("kakao rest api key : ",KAKAO_REST_API_KEY)
 const REDIRECT_URI=process.env.REDIRECT_URI
