@@ -38,7 +38,7 @@ app.use(cors({
 app.use(express.json());
 
 app.get('/api/test', (req, res) => {
-  res.send('모닝스탁 백엔드 서버 실행 중!');
+  res.send('backend start test!');
 });
 
 app.use('/api/user', userRoutes);
