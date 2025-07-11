@@ -137,6 +137,7 @@ export async function generateAndSendDailyReport(userId) {
   const startDate = dayjs('2025-06-01');
   const user = await prisma.user.findUnique({ where: { id: userId } });
   const email = user?.email;
+  console.log("sending email>>>",email)
   //임시
   if (email!=="sunbun2179@daum.net"||email!=="lwh961212@gmail.com")return;
   if (!email) throw new Error('유저 이메일을 찾을 수 없습니다');
