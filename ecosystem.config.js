@@ -15,7 +15,7 @@ module.exports = {
         KIS_APP_KEY: "PS20KQZDsbM793sjjPc9q4Lq3C2fnruVowXx",
         KIS_APP_SECRET: "tcu+o9oI50ql2yrqkIxs3VLkmx29MzbGJ537YXC1tnPTi2zlpqcSaTGgLjUNgymZdH1FPZEcjbOynuf8zA7xTxkTQuvTUqJclrhSkNAzWxvwyiUpCnZzddB1yEyuwHgXj2HQIC34fajBclcf1yGtCqefEnkIwXcLxYIvRbj0r26O8nXhCEQ=",
         KAKAO_REST_API_KEY: "1e8f56a25b0fc290dc08054c58fcdbf9",
-        REDIRECT_URI: "https://ju-sung.com/auth/kakao/callback",
+        REDIRECT_URI: "https://www.ju-sung.com/auth/kakao/callback",
         GMAIL_USER:"lwh961212@gmail.com",
         GMAIL_PASS:"tjxf kgeh gdrl zizf"
       }
