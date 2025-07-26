@@ -51,7 +51,7 @@ app.use('/api/kis', kisRoutes);
 app.use('/api/dailyReport', dailyReportRoutes);
 
 // ⚠️ 반드시 라우터 등록 후에 swagger 설정
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+// app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
 
 app.listen(PORT, () => {
   console.log(` 시작됨: http://localhost:${PORT}`);
