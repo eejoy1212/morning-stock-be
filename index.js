@@ -22,7 +22,8 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://morning-stock-web.vercel.app',
    'https://ju-sung.com',
-   'https://www.ju-sung.com'
+   'https://www.ju-sung.com',
+    'http://localhost:4000',
 ];
 const PORT = process.env.PORT || 4000;
 app.use(cors({
@@ -50,7 +51,7 @@ app.use('/api/kis', kisRoutes);
 app.use('/api/dailyReport', dailyReportRoutes);
 
 // ⚠️ 반드시 라우터 등록 후에 swagger 설정
-// app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
 
 app.listen(PORT, () => {
   console.log(` 시작됨: http://localhost:${PORT}`);

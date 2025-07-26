@@ -1864,5 +1864,234 @@ cron.schedule('0 18 * * *', async () => {
     console.error('🕔 [CRON 18:00 PM] collect fail : daily marketCap', err.message);
   }
 });
+// 기관매수
+/**
+ * @swagger
+ * /api/kis/save-institution-netbuy:
+ *   post:
+ *     summary: KIS API로부터 기관 순매수 종목을 저장
+ *     tags: [KIS]
+ *     description: 특정 일자 기준으로 기관 순매수 데이터를 외부 API에서 수집해 DB에 저장합니다. 매일 18시에 실행 권장.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               date:
+ *                 type: string
+ *                 format: date
+ *                 example: "2025-07-25"
+ *     responses:
+ *       200:
+ *         description: 저장된 종목 리스트
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 count:
+ *                   type: integer
+ *                 saved:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       rank:
+ *                         type: integer
+ *                       code:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                       institutionNetBuy:
+ *                         type: integer
+ *       400:
+ *         description: 잘못된 날짜 포맷
+ *       500:
+ *         description: 저장 실패
+ */
+router.post('/save-institution-netbuy', async (req, res) => {
+  const { date } = req.body;
+// const date = dayjs().format('YYYY-MM-DD')
+  if (!date) {
+    return res.status(400).json({ error: 'date는 필수입니다. 예: 2025-07-25' });
+  }
 
+  const parsedDate = dayjs(date);
+  if (!parsedDate.isValid()) {
+    return res.status(400).json({ error: '유효한 날짜 형식이 아닙니다. 예: 2025-07-25' });
+  }
+
+  const targetDateStr = parsedDate.format('YYYYMMDD');
+  const targetDate = parsedDate.toDate();
+
+  try {
+    const tickers = await prisma.tickerInfo.findMany({
+      select: { code: true, name: true },
+    });
+
+    const accessToken = await getAccessToken();
+    const limiter = new Bottleneck({ maxConcurrent: 5, minTime: 300 });
+
+    const results = [];
+console.log("app key",APP_KEY)
+    console.log("app secret",APP_SECRET)
+    console.log("access token",accessToken)
+    const tasks = tickers.map((ticker) =>
+      limiter.schedule(async () => {
+        try {
+          const response = await api.get(
+            `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-investor`,
+            {
+              headers: {
+                'content-type': 'application/json; charset=utf-8',
+                authorization: `Bearer ${accessToken}`,
+                appkey: APP_KEY,
+                appsecret: APP_SECRET,
+                tr_id: 'FHKST01010900',
+                custtype: 'P',
+              },
+              params: {
+                fid_cond_mrkt_div_code: 'J',
+                fid_input_iscd: ticker.code,
+              },
+            }
+          );
+
+          const data = response.data.output;
+          const match = data.find((d) => d.stck_bsop_date === targetDateStr);
+console.log("****** match : ",match)
+const institutionNetBuy=match.orgn_ntby_qty
+          if (match) {
+            results.push({
+              code: ticker.code,
+              name: ticker.name,
+        
+              institutionNetBuy: parseInt(institutionNetBuy || '0', 10),
+            });
+          }
+        } catch (err) {
+          console.warn(`⚠️ ${ticker.name}(${ticker.code}) 실패`, err?.response?.data || err.message);
+        }
+      })
+    );
+
+    await Promise.all(tasks);
+
+    const top20 = results
+      .sort((a, b) => b.institutionNetBuy - a.institutionNetBuy)
+      // .slice(0, 20)
+      .map((item, idx) => ({
+        rank: idx + 1,
+        ...item,
+      }));
+
+    // 기존 데이터 삭제
+    await prisma.institutionNetBuy.deleteMany({
+      where: { date: targetDate },
+    });
+
+    // 저장
+    await prisma.institutionNetBuy.createMany({
+      data: top20.map((item) => ({
+        rank: item.rank,
+        code: item.code,
+        name: item.name,
+        institutionNetBuy: item.institutionNetBuy,
+        date: targetDate,
+      })),
+    });
+
+    res.json({ count: top20.length, saved: top20 });
+  } catch (err) {
+    console.error('📛 저장 실패:', err.message);
+    res.status(500).json({ error: '기관 순매수 저장 실패', details: err.message });
+  }
+});
+cron.schedule('0 18 * * *', async () => {
+  const today = dayjs().format('YYYY-MM-DD');
+  await axios.post('http://localhost:4000/api/kis/save-institution-netbuy', { date: today });
+});
+/**
+ * @swagger
+ * /api/kis/institution-rank:
+ *   get:
+ *     summary: 특정 날짜의 기관 순매수 상위 20종목 조회
+ *     tags: [KIS]
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         description: 조회할 날짜 2025-07-25
+ *         schema:
+ *           type: string
+ *           format: date
+ *     responses:
+ *       200:
+ *         description: 기관 순매수 랭킹 데이터 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 date:
+ *                   type: string
+ *                   example: "2025-07-25"
+ *                 count:
+ *                   type: integer
+ *                   example: 20
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       code:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                       institutionNetBuy:
+ *                         type: integer
+ *                       date:
+ *                         type: string
+ *                         format: date-time
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *       400:
+ *         description: 잘못된 날짜 형식
+ *       500:
+ *         description: 서버 오류
+ */
+router.get('/institution-rank', async (req, res) => {
+  const { date } = req.query;
+
+  if (!date) {
+    return res.status(400).json({ error: 'date는 필수입니다. 예: 2025-07-25' });
+  }
+
+  const parsedDate = dayjs(date);
+  if (!parsedDate.isValid()) {
+    return res.status(400).json({ error: '유효한 날짜 형식이 아닙니다. 예: 2025-07-25' });
+  }
+
+  try {
+    const result = await prisma.institutionNetBuy.findMany({
+      where: {
+        date: parsedDate.toDate(),
+      },
+      orderBy: {
+        institutionNetBuy: 'desc',
+      },
+      take: 20,
+    });
+
+    res.json({ date, count: result.length, data: result });
+  } catch (err) {
+    console.error('📛 조회 실패:', err.message);
+    res.status(500).json({ error: '데이터 조회 실패', details: err.message });
+  }
+});
 export default router;
