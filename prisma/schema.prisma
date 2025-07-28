@@ -76,17 +76,17 @@ model MarketCapRanking {
   @@index([code, date])
 }
 //기관매수
-model InstitutionNetBuy {
-  id                 String   @id @default(cuid())
-  date               DateTime // 조회 날짜 (예: 2025-07-26)
-  code               String   // 종목 코드
-  name               String   // 종목명
-  institutionNetBuy  Int      // 기관 순매수량
-  rank               Int?     // 순매수량 기준 랭킹 (nullable 처리 가능)
-  createdAt          DateTime @default(now())
-
-  @@index([date])
-  @@index([code, date])
+model InvestorNetBuy {
+  id                      Int      @id @default(autoincrement())
+  code                    String
+  name                    String
+  rank                    Int
+  date                    DateTime
+  stckClpr                Int     // 종가
+  prdyVrss                Int     // 전일대비 가격차이
+  institutionNetBuy       Int     // 기관
+  foreignerNetBuy         Int     // 외국인
+  individualNetBuy        Int     // 개인
 }
 
 

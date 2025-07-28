@@ -1865,13 +1865,14 @@ cron.schedule('0 18 * * *', async () => {
   }
 });
 // 기관매수
+
 /**
  * @swagger
- * /api/kis/save-institution-netbuy:
+ * /api/kis/save-investor-netbuy:
  *   post:
- *     summary: KIS API로부터 기관 순매수 종목을 저장
+ *     summary: KIS API로부터 투자자별 순매수 종목 저장
  *     tags: [KIS]
- *     description: 특정 일자 기준으로 기관 순매수 데이터를 외부 API에서 수집해 DB에 저장합니다. 매일 18시에 실행 권장.
+ *     description: 특정 일자 기준으로 투자자(개인, 외국인, 기관) 순매수 데이터를 외부 API에서 수집해 DB에 저장합니다. 매일 18시에 실행 권장.
  *     requestBody:
  *       required: true
  *       content:
@@ -1904,40 +1905,39 @@ cron.schedule('0 18 * * *', async () => {
  *                         type: string
  *                       name:
  *                         type: string
+ *                       stckClpr:
+ *                         type: integer
+ *                         description: 종가
+ *                       prdyVrss:
+ *                         type: integer
+ *                         description: 전일대비 가격차이
+ *                       individualNetBuy:
+ *                         type: integer
+ *                         description: 개인 순매수량
+ *                       foreignerNetBuy:
+ *                         type: integer
+ *                         description: 외국인 순매수량
  *                       institutionNetBuy:
  *                         type: integer
- *       400:
- *         description: 잘못된 날짜 포맷
- *       500:
- *         description: 저장 실패
+ *                         description: 기관 순매수량
  */
-router.post('/save-institution-netbuy', async (req, res) => {
+router.post('/save-investor-netbuy', async (req, res) => {
   const { date } = req.body;
-// const date = dayjs().format('YYYY-MM-DD')
-  if (!date) {
-    return res.status(400).json({ error: 'date는 필수입니다. 예: 2025-07-25' });
-  }
+  if (!date) return res.status(400).json({ error: 'date는 필수입니다. 예: 2025-07-25' });
 
   const parsedDate = dayjs(date);
-  if (!parsedDate.isValid()) {
-    return res.status(400).json({ error: '유효한 날짜 형식이 아닙니다. 예: 2025-07-25' });
-  }
+  if (!parsedDate.isValid()) return res.status(400).json({ error: '유효한 날짜 형식이 아닙니다.' });
 
   const targetDateStr = parsedDate.format('YYYYMMDD');
   const targetDate = parsedDate.toDate();
 
   try {
-    const tickers = await prisma.tickerInfo.findMany({
-      select: { code: true, name: true },
-    });
-
+    const tickers = await prisma.tickerInfo.findMany({ select: { code: true, name: true } });
     const accessToken = await getAccessToken();
     const limiter = new Bottleneck({ maxConcurrent: 5, minTime: 300 });
 
     const results = [];
-console.log("app key",APP_KEY)
-    console.log("app secret",APP_SECRET)
-    console.log("access token",accessToken)
+
     const tasks = tickers.map((ticker) =>
       limiter.schedule(async () => {
         try {
@@ -1961,14 +1961,25 @@ console.log("app key",APP_KEY)
 
           const data = response.data.output;
           const match = data.find((d) => d.stck_bsop_date === targetDateStr);
-console.log("****** match : ",match)
-const institutionNetBuy=match.orgn_ntby_qty
+          console.log(`🔍 ${ticker.name}(${ticker.code}) 순매수 데이터:`);
+console.log({
+              code: ticker.code,
+              name: ticker.name,
+              individualNetBuy: parseInt(match.prsn_ntby_qty || '0', 10),
+              foreignerNetBuy: parseInt(match.frgn_ntby_qty || '0', 10),
+              institutionNetBuy: parseInt(match.orgn_ntby_qty || '0', 10),
+              stckClpr: parseInt(match.stck_clpr || '0', 10),
+              prdyVrss: parseInt(match.prdy_vrss || '0', 10),
+            })
           if (match) {
             results.push({
               code: ticker.code,
               name: ticker.name,
-        
-              institutionNetBuy: parseInt(institutionNetBuy || '0', 10),
+              individualNetBuy: parseInt(match.prsn_ntby_qty || '0', 10),
+              foreignerNetBuy: parseInt(match.frgn_ntby_qty || '0', 10),
+              institutionNetBuy: parseInt(match.orgn_ntby_qty || '0', 10),
+              stckClpr: parseInt(match.stck_clpr || '0', 10),
+              prdyVrss: parseInt(match.prdy_vrss || '0', 10),
             });
           }
         } catch (err) {
@@ -1979,57 +1990,63 @@ const institutionNetBuy=match.orgn_ntby_qty
 
     await Promise.all(tasks);
 
-    const top20 = results
+    const ranked = results
       .sort((a, b) => b.institutionNetBuy - a.institutionNetBuy)
-      // .slice(0, 20)
-      .map((item, idx) => ({
-        rank: idx + 1,
+      .map((item, idx) => ({ rank: idx + 1, ...item }));
+
+    await prisma.investorNetBuy.deleteMany({ where: { date: targetDate } });
+
+    await prisma.investorNetBuy.createMany({
+      data: ranked.map((item) => ({
         ...item,
-      }));
-
-    // 기존 데이터 삭제
-    await prisma.institutionNetBuy.deleteMany({
-      where: { date: targetDate },
-    });
-
-    // 저장
-    await prisma.institutionNetBuy.createMany({
-      data: top20.map((item) => ({
-        rank: item.rank,
-        code: item.code,
-        name: item.name,
-        institutionNetBuy: item.institutionNetBuy,
         date: targetDate,
       })),
     });
 
-    res.json({ count: top20.length, saved: top20 });
+    res.json({ count: ranked.length, saved: ranked });
   } catch (err) {
     console.error('📛 저장 실패:', err.message);
-    res.status(500).json({ error: '기관 순매수 저장 실패', details: err.message });
+    res.status(500).json({ error: '투자자별 순매수 저장 실패', details: err.message });
   }
 });
+
 cron.schedule('0 18 * * *', async () => {
   const today = dayjs().format('YYYY-MM-DD');
-  await axios.post('http://localhost:4000/api/kis/save-institution-netbuy', { date: today });
+  await axios.post('http://localhost:4000/api/kis/save-investor-netbuy', { date: today });
 });
 /**
  * @swagger
- * /api/kis/institution-rank:
+ * /api/kis/top-netbuy:
  *   get:
- *     summary: 특정 날짜의 기관 순매수 상위 20종목 조회
+ *     summary: 특정 날짜와 주체별 순매수 상위 20종목 조회
  *     tags: [KIS]
+ *     description: 특정 날짜와 투자 주체를 기준으로 순매수 상위 20개 종목을 조회합니다.
  *     parameters:
  *       - in: query
  *         name: date
  *         required: true
- *         description: 조회할 날짜 2025-07-25
  *         schema:
  *           type: string
  *           format: date
+ *           example: "2025-07-28"
+ *         description: 조회할 날짜 (YYYY-MM-DD)
+ *       - in: query
+ *         name: investorType
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [
+ *             institutionNetBuy, foreignerNetBuy, individualNetBuy,
+ *             corpNetBuy, etcForeignerNetBuy,
+ *             insurance, bank, investmentTrust,
+ *             etcFinance, privateEquity, pensionFund,
+ *             financeInvestment, etcInstitution
+ *           ]
+ *           example: institutionNetBuy
+ *         description: 순매수 주체 필드명
  *     responses:
  *       200:
- *         description: 기관 순매수 랭킹 데이터 반환
+ *         description: 주체 기준 순매수 상위 종목 목록
  *         content:
  *           application/json:
  *             schema:
@@ -2037,61 +2054,123 @@ cron.schedule('0 18 * * *', async () => {
  *               properties:
  *                 date:
  *                   type: string
- *                   example: "2025-07-25"
+ *                   example: "2025-07-28"
+ *                 investorType:
+ *                   type: string
  *                 count:
  *                   type: integer
- *                   example: 20
- *                 data:
+ *                 items:
  *                   type: array
  *                   items:
- *                     type: object
- *                     properties:
- *                       id:
- *                         type: string
- *                       code:
- *                         type: string
- *                       name:
- *                         type: string
- *                       institutionNetBuy:
- *                         type: integer
- *                       date:
- *                         type: string
- *                         format: date-time
- *                       createdAt:
- *                         type: string
- *                         format: date-time
+ *                     $ref: '#/components/schemas/InvestorNetBuy'
  *       400:
- *         description: 잘못된 날짜 형식
+ *         description: 잘못된 요청
  *       500:
  *         description: 서버 오류
+ *
+ * components:
+ *   schemas:
+ *     InvestorNetBuy:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: integer
+ *         code:
+ *           type: string
+ *         name:
+ *           type: string
+ *         rank:
+ *           type: integer
+ *         stckClpr:
+ *           type: integer
+ *         prdyVrss:
+ *           type: integer
+ *         individualNetBuy:
+ *           type: integer
+ *         foreignerNetBuy:
+ *           type: integer
+ *         institutionNetBuy:
+ *           type: integer
+ *         corpNetBuy:
+ *           type: integer
+ *         etcForeignerNetBuy:
+ *           type: integer
+ *         insurance:
+ *           type: integer
+ *         bank:
+ *           type: integer
+ *         investmentTrust:
+ *           type: integer
+ *         etcFinance:
+ *           type: integer
+ *         privateEquity:
+ *           type: integer
+ *         pensionFund:
+ *           type: integer
+ *         financeInvestment:
+ *           type: integer
+ *         etcInstitution:
+ *           type: integer
+ *         date:
+ *           type: string
+ *           format: date-time
  */
-router.get('/institution-rank', async (req, res) => {
-  const { date } = req.query;
+router.get('/top-netbuy', async (req, res) => {
+  const { date, investorType } = req.query;
 
-  if (!date) {
-    return res.status(400).json({ error: 'date는 필수입니다. 예: 2025-07-25' });
+  if (!date || typeof date !== 'string') {
+    return res.status(400).json({ error: 'date는 YYYY-MM-DD 형식의 문자열이어야 합니다.' });
+  }
+
+  if (!investorType || typeof investorType !== 'string') {
+    return res.status(400).json({ error: 'investorType 파라미터는 필수입니다.' });
+  }
+
+  const validFields = [
+    'institutionNetBuy',
+    'foreignerNetBuy',
+    'individualNetBuy',
+    'corpNetBuy',
+    'etcForeignerNetBuy',
+    'insurance',
+    'bank',
+    'investmentTrust',
+    'etcFinance',
+    'privateEquity',
+    'pensionFund',
+    'financeInvestment',
+    'etcInstitution',
+  ];
+
+  if (!validFields.includes(investorType)) {
+    return res.status(400).json({ error: `investorType은 다음 중 하나여야 합니다: ${validFields.join(', ')}` });
   }
 
   const parsedDate = dayjs(date);
   if (!parsedDate.isValid()) {
-    return res.status(400).json({ error: '유효한 날짜 형식이 아닙니다. 예: 2025-07-25' });
+    return res.status(400).json({ error: '유효하지 않은 날짜 형식입니다.' });
   }
 
   try {
-    const result = await prisma.institutionNetBuy.findMany({
+    const top20 = await prisma.investorNetBuy.findMany({
       where: {
         date: parsedDate.toDate(),
       },
       orderBy: {
-        institutionNetBuy: 'desc',
+        [investorType]: 'desc',
       },
       take: 20,
     });
 
-    res.json({ date, count: result.length, data: result });
+    res.json({
+      date: parsedDate.format('YYYY-MM-DD'),
+      investorType,
+      count: top20.length,
+      items: top20,
+    });
   } catch (err) {
-    console.error('📛 조회 실패:', err.message);
-    res.status(500).json({ error: '데이터 조회 실패', details: err.message });
+    console.error('📛 순매수 상위 조회 실패:', err.message);
+    res.status(500).json({ error: '순매수 상위 조회 실패', details: err.message });
   }
 });
 export default router;
