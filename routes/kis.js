@@ -1,6 +1,6 @@
 // //로컬용
-// import dotenv from 'dotenv';
-// dotenv.config();
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -2171,6 +2171,155 @@ router.get('/top-netbuy', async (req, res) => {
   } catch (err) {
     console.error('📛 순매수 상위 조회 실패:', err.message);
     res.status(500).json({ error: '순매수 상위 조회 실패', details: err.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/kis/candles:
+ *   get:
+ *     summary: 기간별 캔들(시가/고가/저가/종가/거래량) 데이터
+ *     tags: [KIS]
+ *     description: KIS 일/주/월 차트 API 응답을 차트용 형태로 정규화하여 반환합니다.
+ *     parameters:
+ *       - in: query
+ *         name: ticker
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "000660"
+ *         description: 단축 종목코드 SK하이닉스 000660
+ *       - in: query
+ *         name: from
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: "^[0-9]{8}$"
+ *           example: "20240101"
+ *         description: 조회 시작일 (YYYYMMDD)
+ *       - in: query
+ *         name: to
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: "^[0-9]{8}$"
+ *           example: "20250131"
+ *         description: 조회 종료일 (YYYYMMDD)
+ *       - in: query
+ *         name: period
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [D, W, M]
+ *           default: D
+ *         description: 조회 주기 (D=일봉, W=주봉, M=월봉)
+ *       - in: query
+ *         name: adjust
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: ["0", "1"]
+ *           default: "0"
+ *         description: 수정주가 반영 여부 (0=반영, 1=미반영)
+ *     responses:
+ *       200:
+ *         description: 차트용 캔들 데이터
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ticker:
+ *                   type: string
+ *                   example: "000660"
+ *                 period:
+ *                   type: string
+ *                   example: "D"
+ *                 adjust:
+ *                   type: boolean
+ *                   description: true면 수정주가 반영됨
+ *                   example: true
+ *                 candles:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       t:
+ *                         type: string
+ *                         description: 날짜 (YYYY-MM-DD)
+ *                         example: "2024-06-20"
+ *                       o:
+ *                         type: number
+ *                         description: 시가
+ *                         example: 150000
+ *                       h:
+ *                         type: number
+ *                         description: 고가
+ *                         example: 154500
+ *                       l:
+ *                         type: number
+ *                         description: 저가
+ *                         example: 148500
+ *                       c:
+ *                         type: number
+ *                         description: 종가
+ *                         example: 153200
+ *                       v:
+ *                         type: number
+ *                         description: 거래량
+ *                         example: 10438212
+ *       400:
+ *         description: 필수 파라미터 누락 또는 형식 오류
+ *       500:
+ *         description: 서버 오류 또는 KIS API 실패
+ */
+
+router.get('/candles', async (req, res) => {
+  console.log("여기 타나")
+  const { ticker, from, to, period = 'D', adjust = '0' } = req.query;
+  if (!ticker || !from || !to) {
+    return res.status(400).json({ error: 'ticker, from, to 필요 (YYYYMMDD)' });
+  }
+  try {
+    const token = await getAccessToken();
+    const r = await axios.get(
+      `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice`,
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST03010100',
+          custtype: 'P',
+        },
+        params: {
+          fid_cond_mrkt_div_code: 'J',
+          fid_input_iscd: ticker,
+          fid_input_date_1: String(from),
+          fid_input_date_2: String(to),
+          fid_period_div_code: period,   // D/W/M
+          fid_org_adj_prc: adjust,       // 0 수정주가
+        },
+      }
+    );
+
+    const rows = (r.data.output2 ?? []);
+    // 주의: KIS는 최신→과거 순서가 섞여올 수 있으니 날짜 오름차순으로 정렬
+    rows.sort((a, b) => a.stck_bsop_date.localeCompare(b.stck_bsop_date));
+
+    const candles = rows.map((d) => ({
+      t: `${d.stck_bsop_date.slice(0,4)}-${d.stck_bsop_date.slice(4,6)}-${d.stck_bsop_date.slice(6,8)}`, // YYYY-MM-DD
+      o: Number(d.stck_oprc),
+      h: Number(d.stck_hgpr),
+      l: Number(d.stck_lwpr),
+      c: Number(d.stck_clpr),
+      v: Number(d.acml_vol),
+    }));
+console.log(candles)
+    res.json({ ticker, period, adjust: adjust === '0', candles });
+  } catch (e) {
+    console.error('candles 실패:', e.response?.data || e.message);
+    res.status(500).json({ error: 'candles 조회 실패', details: e.message });
   }
 });
 export default router;

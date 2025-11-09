@@ -11,21 +11,26 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@prisma/client": "^6.10.1",
-    "axios": "^1.10.0",
+    "@prisma/client": "^6.18.0",
+    "axios": "^1.13.2",
+    "axios-retry": "^4.5.0",
     "bcrypt": "^6.0.0",
     "bottleneck": "^2.19.5",
-    "cheerio": "^1.1.0",
+    "cheerio": "^1.1.2",
     "cors": "^2.8.5",
     "cron": "^4.3.1",
+    "date-fns": "^4.1.0",
     "dayjs": "^1.11.13",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "fs": "^0.0.1-security",
+    "http": "^0.0.1-security",
+    "https": "^1.0.0",
     "iconv-lite": "^0.6.3",
     "jsdom": "^26.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
+    "node-cache": "^5.1.2",
     "node-cron": "^4.2.0",
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.5",
@@ -34,10 +39,12 @@
     "postgres": "^3.4.7",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "uuid": "^13.0.0",
+    "ws": "^8.18.3",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.10",
-    "prisma": "^6.10.1"
+    "prisma": "^6.18.0"
   }
 }

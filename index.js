@@ -1,6 +1,6 @@
 // // 로컬용
-// import dotenv from 'dotenv';
-// dotenv.config();
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import cors from 'cors';
 
@@ -12,7 +12,8 @@ import tickerRoutes from './routes/ticker.js';
 import kisRoutes from './routes/kis.js';
 import dailyReportRoutes from './routes/dailyReport.js';
 import { swaggerUi, specs } from './swagger.js';
-
+import http from 'http';
+import { attachWebSocket } from './ws-server.js';
 
 const app = express();
 const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app';
@@ -21,9 +22,9 @@ const FRONTEND_ORIGIN = 'https://morning-stock-web.vercel.app';
 const allowedOrigins = [
   'http://localhost:3000',
   'https://morning-stock-web.vercel.app',
-   'https://ju-sung.com',
-   'https://www.ju-sung.com',
-    'http://localhost:4000',
+  'https://ju-sung.com',
+  'https://www.ju-sung.com',
+  'http://localhost:4000',
 ];
 const PORT = process.env.PORT || 4000;
 app.use(cors({
@@ -53,6 +54,13 @@ app.use('/api/dailyReport', dailyReportRoutes);
 // ⚠️ 반드시 라우터 등록 후에 swagger 설정
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(specs));
 
+// WebSocket 붙이기
+// const server = http.createServer(app);
+// const wsBridge = attachWebSocket(server);
+
+// server.listen(PORT, () => {
+//   console.log(`HTTP+WS: http://localhost:${PORT} (ws path: /ws)`);
+// });
 app.listen(PORT, () => {
   console.log(` 시작됨: http://localhost:${PORT}`);
 });

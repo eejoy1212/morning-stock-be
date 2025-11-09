@@ -19,6 +19,7 @@ model User {
   createdAt DateTime @default(now())
   sectors   Sector[]
   type      UserType   @default(email)
+  refreshTokenHash String?
 }
 
 model Sector {

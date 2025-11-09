@@ -1,6 +1,6 @@
 // //로컬용
-// import dotenv from 'dotenv';
-// dotenv.config();
+import dotenv from 'dotenv';
+dotenv.config();
 import axios from 'axios';
 import express from 'express';
 import cron from 'node-cron';

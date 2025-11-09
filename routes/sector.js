@@ -5,12 +5,28 @@ import jwt from 'jsonwebtoken';
 import dayjs from 'dayjs'
 import axios from 'axios';
 import * as cheerio from 'cheerio'
+import pLimit from "p-limit";
+import http from "http";
+import https from "https";
+import axiosRetry from "axios-retry";
+import NodeCache from "node-cache";
+import Bottleneck from "bottleneck";
 // import dotenv from 'dotenv';
 // dotenv.config(); 
 const router = express.Router();
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
+// ── 동시성 제한 (뉴스 키워드 병렬 호출)
+// ── Axios 공통 설정 (KeepAlive + Timeout + 재시도 1회)
+const httpAgent = new http.Agent({ keepAlive: true });
+const httpsAgent = new https.Agent({ keepAlive: true });
+axios.defaults.httpAgent = httpAgent;
+axios.defaults.httpsAgent = httpsAgent;
+axios.defaults.timeout = 2500;
+axiosRetry(axios, { retries: 1, retryDelay: () => 200 });
+const cache = new NodeCache({ stdTTL: 60 * 15, checkperiod: 60 * 2 });
 
+const limit = pLimit(5);
 /**
  * @swagger
  * tags:
@@ -465,7 +481,6 @@ router.get('/monthly-top-sector-trend', async (req, res) => {
 
  //임시로 주석
         if (prices.length >= 2) {
-          console.log(">>>>>>>>>>>>>>>>> prices : ",prices)
           const start = prices[0].close
           const end = prices[prices.length - 1].close
           const change = ((end - start) / start) * 100
@@ -659,6 +674,283 @@ router.get('/monthly-gainers', async (req, res) => {
 })
 /**
  * @swagger
+ * /api/sector/og:
+ *   get:
+ *     summary: 주어진 URL에서 OG(Open Graph) 이미지 추출
+ *     tags: [Sector]
+ *     parameters:
+ *       - in: query
+ *         name: url
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: OG 이미지를 가져올 대상 페이지의 URL
+ *     responses:
+ *       200:
+ *         description: OG 이미지 URL 반환
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 image:
+ *                   type: string
+ *       400:
+ *         description: URL이 제공되지 않음
+ *       500:
+ *         description: 이미지 추출 실패
+ */
+router.get("/og", async (req, res) => {
+  const { url } = req.query;
+
+  if (!url) {
+    return res.status(400).json({ error: "URL이 필요합니다." });
+  }
+
+  try {
+
+    // ✅ 원본 HTML 가져오기
+    const { data } = await axios.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; OGFetcher/1.0; +https://yourdomain.com)",
+        Accept: "text/html",
+      },
+      timeout: 3500,
+    });
+
+    const $ = cheerio.load(data);
+
+    // ✅ 1순위: og:image
+    let image =
+      $('meta[property="og:image"]').attr("content") ||
+      $('meta[name="twitter:image"]').attr("content");
+
+    // ✅ 2순위: 첫 번째 <img> 태그
+    if (!image) {
+      const firstImg = $("img").first().attr("src");
+      if (firstImg && /^https?:\/\//.test(firstImg)) {
+        image = firstImg;
+      }
+    }
+
+    // ✅ 3순위: 기본 썸네일
+    if (!image) {
+      image = "https://yourcdn.com/default-thumbnail.png";
+    }
+
+    // ⚙️ protocol 없는 경우 보정 (예: //img.naver.net/...)
+    if (image.startsWith("//")) {
+      image = "https:" + image;
+    }
+
+    return res.json({ image });
+  } catch (err) {
+    console.error("❌ OG 이미지 추출 실패:", err.message);
+    return res.json({ image: "https://yourcdn.com/default-thumbnail.png" });
+  }
+});
+/**
+ * @swagger
+ * /api/sector/keyword-news:
+ *   get:
+ *     summary: 키워드별 주식 뉴스 3건씩 조회 (Naver Search API)
+ *     tags: [Sector]
+ *     description: |
+ *       사전에 정한(또는 동적으로 생성한) 키워드 목록을 기준으로
+ *       네이버 뉴스 API에서 각 키워드당 최신 기사 3건을 가져와 반환합니다.
+ *       응답은 배열 1개 요소에 키워드-기사목록 맵을 담은 형태입니다.
+ *       예: `[ { "삼성전자": [...3개], "현대차": [...3개] } ]`
+ *     responses:
+ *       200:
+ *         description: 키워드별 뉴스 목록
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 keywords:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: 사용된 키워드 목록
+ *                 result:
+ *                   type: array
+ *                   minItems: 1
+ *                   maxItems: 1
+ *                   items:
+ *                     type: object
+ *                     additionalProperties:
+ *                       type: array
+ *                       description: 해당 키워드로 수집된 기사 3건
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           title:
+ *                             type: string
+ *                             description: 기사 제목(HTML 태그 제거)
+ *                           originallink:
+ *                             type: string
+ *                             nullable: true
+ *                           link:
+ *                             type: string
+ *                             nullable: true
+ *                           pubDate:
+ *                             type: string
+ *                             format: date-time
+ *                             nullable: true
+ *       500:
+ *         description: 서버 오류
+ */
+const limiter = new Bottleneck({
+  minTime: 400,        // 요청 간 0.4초 간격 (초당 ~2~3회)
+  maxConcurrent: 1,    // 직렬화(보수적으로)
+});
+
+const perKeywordCache = new NodeCache({ stdTTL: 60 * 5, checkperiod: 60 }); // 5분
+
+async function searchNewsByKeyword(keyword, per, clientId, clientSecret) {
+  const cacheKey = `kw:${keyword}:per:${per}`;
+  const hit = perKeywordCache.get(cacheKey);
+  if (hit) return hit;
+
+  const run = async () => {
+    const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(
+      keyword
+    )}&display=${Math.max(per * 2, per)}&sort=date`;
+
+    try {
+      const { data } = await axios.get(url, {
+        headers: {
+          "X-Naver-Client-Id": clientId,
+          "X-Naver-Client-Secret": clientSecret,
+        },
+        timeout: 8000,
+      });
+
+      const items = Array.isArray(data?.items) ? data.items : [];
+      const uniq = new Map();
+      for (const it of items) {
+        const key =
+          (typeof it.originallink === "string" && it.originallink) ||
+          `${stripTag(it.title ?? "")}_${it.pubDate ?? ""}`;
+        if (!uniq.has(key)) uniq.set(key, it);
+      }
+
+      const top = Array.from(uniq.values())
+        .sort(
+          (a, b) =>
+            new Date(b.pubDate ?? 0).getTime() - new Date(a.pubDate ?? 0).getTime()
+        )
+        .slice(0, per)
+        .map((it) => ({
+          title: stripTag(it.title ?? ""),
+          originallink: it.originallink ?? null,
+          link: it.link ?? null,
+          pubDate: it.pubDate ?? null,
+        }));
+
+      perKeywordCache.set(cacheKey, top);
+      return top;
+    } catch (err) {
+      // 429 핸들링: Retry-After or 지수 백오프 후 1회 재시도
+      if (err?.response?.status === 429) {
+        const ra = parseInt(err.response.headers?.["retry-after"] || "1", 10);
+        const waitMs = Math.max(ra, 1) * 1000;
+        await new Promise((r) => setTimeout(r, waitMs));
+        // 한 번만 재시도
+        const { data } = await axios.get(url, {
+          headers: {
+            "X-Naver-Client-Id": clientId,
+            "X-Naver-Client-Secret": clientSecret,
+          },
+          timeout: 8000,
+        });
+        const items = Array.isArray(data?.items) ? data.items : [];
+        console.log("뉴스 결과 : ",items)
+        const uniq = new Map();
+        for (const it of items) {
+          const key =
+            (typeof it.originallink === "string" && it.originallink) ||
+            `${stripTag(it.title ?? "")}_${it.pubDate ?? ""}`;
+          if (!uniq.has(key)) uniq.set(key, it);
+        }
+        const top = Array.from(uniq.values())
+          .sort(
+            (a, b) =>
+              new Date(b.pubDate ?? 0).getTime() -
+              new Date(a.pubDate ?? 0).getTime()
+          )
+          .slice(0, per)
+          .map((it) => ({
+            title: stripTag(it.title ?? ""),
+            originallink: it.originallink ?? null,
+            link: it.link ?? null,
+            pubDate: it.pubDate ?? null,
+          }));
+        perKeywordCache.set(cacheKey, top);
+        console.log("top : ",top)
+        return top;
+      }
+      console.log(err)
+      throw err;
+    }
+  };
+
+  // limiter로 속도 제한 적용
+  return limiter.schedule(run);
+}
+
+// 라우터
+router.get("/keyword-news", async (req, res) => {
+  try {
+    console.log("키워드 검색")
+    const clientId = process.env.NAVER_CLIENT_ID;
+    const clientSecret = process.env.NAVER_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: "NAVER API 키 미설정" });
+    }
+
+    const raw = (req.query.keywords) || "";
+    const perRaw = Number(req.query.per) || 3;
+    const per = Math.min(Math.max(perRaw, 1), 5);
+
+    let keywords = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (keywords.length === 0) {
+      keywords = await fetchTrendingKeywords(); // 너가 만든 크롤링+캐싱
+    }
+    keywords = keywords.slice(0, 12); // 안전한 상한선
+
+    const results = await Promise.all(
+      keywords.map(async (k) => ({
+        keyword: k,
+        articles: await searchNewsByKeyword(k, per, clientId, clientSecret),
+      }))
+    );
+
+    const bucket= {};
+    for (const r of results) bucket[r.keyword] = r.articles;
+console.log(bucket)
+    return res.json({ success: true, keywords, per, result: [bucket] });
+  } catch (err) {
+    console.error("키워드별 뉴스 수집 실패:", err?.message ?? err);
+    return res
+      .status(err?.response?.status || 500)
+      .json({ error: "뉴스 수집 실패", details: err?.message ?? String(err) });
+  }
+});
+
+
+
+
+
+/**
+ * @swagger
  * /api/sector/news:
  *   get:
  *     summary: 내 섹터에 포함된 종목 관련 뉴스 조회 (Naver API 기반)
@@ -689,120 +981,323 @@ router.get('/monthly-gainers', async (req, res) => {
  *                       pubDate:
  *                         type: string
  */
-// 🔍 og:image 파싱 함수
-async function getOgImage(url) {
-  try {
-    const { data: html } = await axios.get(url, {
-      timeout: 3000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0', // 크롤링 차단 방지
-      },
-    })
-
-    const $ = cheerio.load(html)
-
-    // 1순위: og:image
-    const ogImage = $('meta[property="og:image"]').attr('content')
-    if (ogImage) return ogImage
-
-    // 2순위: 가장 큰 <img> 찾기 (폭 또는 높이 큰 순서)
-    const images = $('img')
-      .map((_, el) => {
-        const src = $(el).attr('src') || $(el).attr('data-src')
-        const width = parseInt($(el).attr('width')) || 0
-        const height = parseInt($(el).attr('height')) || 0
-        return { src, width, height, area: width * height }
-      })
-      .get()
-      .filter(img => img.src && img.src.startsWith('http')) // 절대 경로만
-      .sort((a, b) => b.area - a.area) // 가장 큰 이미지 우선
-
-    if (images.length > 0) return images[0].src
-
-    // 3순위: 첫 번째 <img>라도
-    const fallback = $('img').first().attr('src')
-    if (fallback && fallback.startsWith('http')) return fallback
-
-    // 4순위: 기본 썸네일
-    return 'https://yourcdn.com/default-thumbnail.png'
-  } catch (err) {
-    console.warn(`이미지 추출 실패 (${url}):`, err.message)
-    return 'https://yourcdn.com/default-thumbnail.png'
-  }
-}
-
 
 // 📡 뉴스 라우터
-router.get('/news', authenticateTokenOptional, async (req, res) => {
+router.get("/news", authenticateTokenOptional, async (req, res) => {
   try {
-      console.log('🔥 뉴스 요청됨');
-    
     const clientId = process.env.NAVER_CLIENT_ID;
-    const clientSecret =process.env.NAVER_CLIENT_SECRET;
-   console.log('NAVER_CLIENT_ID:', clientId);
-    console.log('NAVER_CLIENT_SECRET:', clientSecret); 
-    const allArticles = [];
+    const clientSecret = process.env.NAVER_CLIENT_SECRET;
 
-    // 기본 키워드 및 섹터 이름 초기화
-    let keywords = ['주식', 'KOSPI', 'KOSDAQ'];
-    let sectorNames= [];
-
-    // 로그인한 경우 관심 종목으로 키워드 대체
-    if (req.userId) {
-      const sectors = await prisma.sector.findMany({
-        where: { userId: req.userId },
-        include: { stocks: true },
-      });
-
-      const extracted = [
-        ...new Set(sectors.flatMap(sector => sector.stocks.map(stock => stock.name)))
-      ];
-
-      if (extracted.length > 0) keywords = extracted;
-
-      // 🆕 섹터 이름 추출
-      sectorNames = sectors.map(sector => sector.name);
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: "NAVER API 키 미설정" });
     }
 
-    for (const keyword of keywords) {
-      const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(keyword)}&display=5&sort=date`;
+    // 기본 키워드/섹터명
+    let keywords = ["KOSPI", "KOSDAQ","화제","속보"];
+    let sectorNames = [];
 
-      const { data } = await axios.get(url, {
-        headers: {
-          'X-Naver-Client-Id': clientId,
-          'X-Naver-Client-Secret': clientSecret,
-        },
-      });
+    // 로그인 사용자면 관심 섹터의 종목명으로 키워드 대체
+    // if (req.userId) {
+    //   const sectors = await prisma.sector.findMany({
+    //     where: { userId: req.userId },
+    //     include: { stocks: true },
+    //   });
 
-      if (data.items?.length) {
-        for (const item of data.items) {
-    try {
-      let ogImage = null;
-  ogImage = await getOgImage(item.link); 
-      allArticles.push({
-            ...item,
-            image: ogImage,
-          });
-} catch (e) {
-  console.warn(`OG 이미지 가져오기 실패: ${item.link}`, e.message);
-}
-     
-        }
-      }
+    //   const extracted = [
+    //     ...new Set(
+    //       sectors.flatMap((sector) => sector.stocks.map((s) => s.name).filter(Boolean))
+    //     ),
+    //   ];
 
-      if (allArticles.length > 24) break;
+    //   if (extracted.length > 0) keywords = extracted;
+    //   sectorNames = sectors.map((s) => s.name).filter(Boolean);
+    // }
+
+    // 네이버 뉴스 병렬 호출(키워드별 상위 5건)
+    const tasks = keywords.map((keyword) =>
+      limit(async () => {
+        const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(
+          keyword
+        )}&display=5&sort=date`;
+
+        const { data } = await axios.get(url, {
+          headers: {
+            "X-Naver-Client-Id": clientId,
+            "X-Naver-Client-Secret": clientSecret,
+          },
+        });
+
+        return Array.isArray(data?.items) ? data.items : [];
+      })
+    );
+
+    const fetchedArrays = await Promise.all(tasks);
+    const items = fetchedArrays.flat();
+
+    // 중복 제거 (originallink 우선, 없으면 title+pubDate 조합)
+    const uniqMap = new Map();
+    for (const it of items) {
+      const key =
+        (typeof it.originallink === "string" && it.originallink) ||
+        `${it.title ?? ""}_${it.pubDate ?? ""}`;
+      if (!uniqMap.has(key)) uniqMap.set(key, it);
     }
+console.log("Array.from(uniqMap.values())",Array.from(uniqMap.values()).length)
+    // 최대 24건만 반환
+    const articles = Array.from(uniqMap.values()).slice(0, 60);
 
-    res.json({
+    return res.json({
       success: true,
-      articles: allArticles.slice(0, 24),
-      sectorNames, // 🆕 섹터 이름 리스트 포함
+      articles,     // 이미지 없음(프론트에서 /api/og로 지연 로딩)
+      sectorNames,  // 로그인 안 했으면 []
     });
   } catch (err) {
- console.error('Naver 뉴스 수집 실패:', err);
-    res.status(500).json({ error: '뉴스 수집 실패', details: err.message });
+    console.error("Naver 뉴스 수집 실패:", err?.message ?? err);
+    return res.status(500).json({ error: "뉴스 수집 실패", details: err?.message ?? String(err) });
   }
 });
 
+// 인기 뉴스 
+// 트렌드 키워드 캐시: 15분 유지
 
+/**
+ * 네이버 '랭킹뉴스' 페이지에서 섹션/언론사 타이틀 + 기사 제목을 긁어서
+ * 주식 관련 상위 키워드를 추출한다.
+ */
+export async function fetchTrendingKeywords(){
+  const CACHE_KEY = "trending_keywords";
+  const cached = cache.get(CACHE_KEY);
+  if (cached && cached.length) return cached;
+
+  try {
+    const { data } = await axios.get("https://news.naver.com/main/ranking/popularDay.naver", {
+      headers: {
+        // UA 지정: 일부 사이트에서 봇 트래픽 거부 방지
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+      },
+      timeout: 10000,
+    });
+
+    const $ = cheerio.load(data);
+
+    // 후보 키워드 수집: 섹션명, 언론사명, 기사 제목에서 뽑음
+    const raw= [];
+
+    // 섹션 이름 (예: 경제, IT/과학 등)
+    $(".rankingnews_box .rankingnews_name").each((_, el) => {
+      raw.push($(el).text().trim());
+    });
+
+    // 기사 제목
+    $(".rankingnews_box .list_content a").each((_, el) => {
+      const title = $(el).text().trim();
+      if (title) raw.push(title);
+    });
+
+    // 언론사 이름 (보조)
+    $(".rankingnews_box .press_name").each((_, el) => {
+      const press = $(el).text().trim();
+      if (press) raw.push(press);
+    });
+
+    // 타이틀에서 단어 분해 → 국내 증시 관련 단어 위주로 정규화
+    const tokens = raw
+      .flatMap((t) =>
+        t
+          .replace(/[^\w가-힣\s]/g, " ")
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      )
+      // 흔한 불용어/짧은 단어 제거
+      .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+
+    // 자주 등장하는 단어 상위 N + 도메인 키워드 가중치
+    const freq = new Map();
+    for (const tok of tokens) {
+      const base = normalize(tok);
+      const score = (freq.get(base) ?? 0) + 1;
+      freq.set(base, score);
+    }
+
+    // 주식/금융 도메인 가중치
+    for (const key of DOMAIN_BONUS) {
+      if (freq.has(key)) freq.set(key, (freq.get(key) ?? 0) + 5);
+    }
+
+    // 점수순 정렬
+    const ranked = [...freq.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([k]) => k);
+
+    // 주식 관련 기본 프롬프트와 합치되 중복 제거
+    const seed = ["주식", "증시", "코스피", "코스닥", "금리", "환율", "반도체", "2차전지"];
+    const uniq = dedupe([...ranked, ...seed])
+      // 뉴스 검색에 유용한 조합 몇 개 추가
+      .map((k) => mapToUsefulQuery(k))
+      .filter(Boolean);
+
+    const top = uniq.slice(0, 30); // 상위 10개
+    cache.set(CACHE_KEY, top);
+    return top;
+  } catch (err) {
+    console.error("트렌드 키워드 수집 실패:", err?.message ?? err);
+    // 실패 시 안전한 기본 세트
+    return ["주식", "증시", "코스피", "코스닥", "반도체", "2차전지", "엔비디아"];
+  }
+}
+
+const STOP_WORDS = new Set([
+  "단독",
+  "속보",
+  "기자",
+  "종합",
+  "영상",
+  "포토",
+  "인터뷰",
+  "오늘",
+  "내일",
+  "정부",
+  "대통령",
+  "의원",
+  "국회",
+  "서울",
+  "한국",
+  "경제",
+  "사회",
+  "정치",
+  "국제",
+  "IT",
+  "과학",
+  "스포츠",
+]);
+
+const DOMAIN_BONUS = [
+  "주식",
+  "증시",
+  "코스피",
+  "코스닥",
+  "삼성전자",
+  "현대차",
+  "LG",
+  "SK",
+  "NVIDIA",
+  "엔비디아",
+  "반도체",
+  "2차전지",
+  "배터리",
+  "환율",
+  "금리",
+];
+
+function normalize(s) {
+  // 간단 정규화 (대문자 → 소문자; 영문만 소문자 처리)
+  return /[A-Za-z]/.test(s) ? s.toLowerCase() : s;
+}
+
+function dedupe(arr) {
+  return [...new Set(arr)];
+}
+
+function mapToUsefulQuery(k) {
+  // 뉴스 검색에서 유용하도록 몇 가지 매핑
+  if (k === "반도체") return "반도체 주가";
+  if (k === "배터리" || k === "2차전지") return "2차전지 주가";
+  if (k === "nvidia") return "엔비디아";
+  if (k === "it") return null; // 너무 일반적이면 제거
+  return k;
+}
+
+
+
+/**
+ * @swagger
+ * /api/sector/news/popular:
+ *   get:
+ *     summary: 주식 관련 인기 뉴스 조회 (크롤링 키워드 + Naver 뉴스 검색)
+ *     tags: [Sector]
+ *     responses:
+ *       200:
+ *         description: 주식 시장 인기 기사 목록
+ */
+router.get("/news/popular", async (req, res) => {
+  try {
+    const clientId = process.env.NAVER_CLIENT_ID;
+    const clientSecret = process.env.NAVER_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: "NAVER API 키 미설정" });
+    }
+
+    // 1) 캐시 히트 체크
+    const CACHE_KEY = "popular_news_v1";
+    const cached = cache.get<any>(CACHE_KEY);
+    if (cached) return res.json(cached);
+
+    // 2) 트렌드 키워드 가져오기 (크롤링 + 15분 캐시)
+    const keywords = await fetchTrendingKeywords();
+
+    // 3) 키워드별 네이버 뉴스 검색 (최신순 5건씩)
+    const tasks = keywords.map((keyword) =>
+      limit(async () => {
+        const url = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(
+          keyword
+        )}&display=5&sort=date`;
+
+        const { data } = await axios.get(url, {
+          headers: {
+            "X-Naver-Client-Id": clientId,
+            "X-Naver-Client-Secret": clientSecret,
+          },
+          timeout: 10000,
+        });
+
+        const items = Array.isArray(data?.items) ? data.items : [];
+        // 키워드 메타정보를 남기면 프론트에서 "이 키워드로 찾은 기사" 배지 표기가능
+        return items.map((it) => ({ ...it, _keyword: keyword }));
+      })
+    );
+
+    const arrays = await Promise.all(tasks);
+    const all = arrays.flat();
+
+    // 4) 중복 제거 (originallink 우선, 없으면 title+pubDate)
+    const uniqMap = new Map();
+    for (const it of all) {
+      const key =
+        (typeof it.originallink === "string" && it.originallink) ||
+        `${stripTag(it.title ?? "")}_${it.pubDate ?? ""}`;
+      if (!uniqMap.has(key)) uniqMap.set(key, it);
+    }
+
+    // 5) 최신순 정렬 후 상위 20개
+    const articles = Array.from(uniqMap.values())
+      .sort(
+        (a, b) => new Date(b.pubDate ?? 0).getTime() - new Date(a.pubDate ?? 0).getTime()
+      )
+      .slice(0, 20);
+
+    const payload = {
+      success: true,
+      keywords,  // 사용된 트렌드 키워드(디버그/배지용)
+      count: articles.length,
+      articles,
+    };
+
+    // 6) 캐시에 저장 (5분)
+    cache.set(CACHE_KEY, payload);
+
+    return res.json(payload);
+  } catch (err) {
+    console.error("인기 뉴스 수집 실패:", err?.message ?? err);
+    return res.status(500).json({
+      error: "인기 뉴스 수집 실패",
+      details: err?.message ?? String(err),
+    });
+  }
+});
+
+function stripTag(html) {
+  return html.replace(/<[^>]*>/g, "");
+}
 export default router;
