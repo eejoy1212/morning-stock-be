@@ -1,6 +1,6 @@
 // //로컬용
-import dotenv from 'dotenv';
-dotenv.config();
+// import dotenv from 'dotenv';
+// dotenv.config();
 import express from 'express';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -2322,4 +2322,429 @@ console.log(candles)
     res.status(500).json({ error: 'candles 조회 실패', details: e.message });
   }
 });
+/**
+ * @swagger
+ * /api/kis/minutes:
+ *   get:
+ *     summary: 단일 종목 당일 1분봉 조회 (차트용 정규화)
+ *     tags: [KIS]
+ *     description: KIS 당일 1분봉 API(FHKST03010200)를 사용해 { t,o,h,l,c,v } 형식으로 반환합니다.
+ *     parameters:
+ *       - in: query
+ *         name: code
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "005930"
+ *         description: 단축 종목코드(6자리)
+ *       - in: query
+ *         name: end
+ *         required: false
+ *         schema:
+ *           type: string
+ *           pattern: "^[0-9]{6}$"
+ *           example: "153000"
+ *         description: 기준 시각(HHMMSS). 해당 시각 "이전" 30개 분봉을 조회하며, 미지정 시 현재(서울시간) 기준.
+ *       - in: query
+ *         name: max
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 360
+ *         description: 최대 수집 분봉 개수(루프 상한). 09:00에 도달하거나 이 개수 중 먼저 만족되면 종료.
+ *       - in: query
+ *         name: all
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: 장시간 체크를 무시하고 강제 조회(정규장 외에도 호출).
+ *       - in: query
+ *         name: session
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [regular, pre, after, all]
+ *           default: regular
+ *         description: 조회할 세션 (0=정규, 1=장전, 2=장후, all=전체)
+ *     responses:
+ *       200:
+ *         description: 시간 오름차순의 분봉 배열
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   t:
+ *                     type: string
+ *                     example: "2025-11-10 09:01"
+ *                     description: "YYYY-MM-DD HH:mm (Asia/Seoul)"
+ *                   o:
+ *                     type: number
+ *                     example: 98600
+ *                   h:
+ *                     type: number
+ *                     example: 98700
+ *                   l:
+ *                     type: number
+ *                     example: 98000
+ *                   c:
+ *                     type: number
+ *                     example: 98200
+ *                   v:
+ *                     type: number
+ *                     example: 123456
+ *       400:
+ *         description: 파라미터 오류
+ *       500:
+ *         description: 서버 오류 또는 KIS API 실패
+ */
+router.get('/minutes', async (req, res) => {
+  const { code, end, max = 360, all = 'false', session = 'regular' } = req.query;
+
+  if (!code || String(code).length !== 6) {
+    return res
+      .status(400)
+      .json({ error: 'code(6자리 종목코드)가 필요합니다.' });
+  }
+
+  // 서울 시각 헬퍼
+  const nowSeoul = () => {
+    const d = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' })
+    );
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const ss = String(d.getSeconds()).padStart(2, '0');
+    return { d, hhmmss: `${hh}${mm}${ss}` };
+  };
+
+  const isRegular = () => {
+    const { d } = nowSeoul();
+    const wd = d.getDay(); // 0=일, 6=토
+    if (wd === 0 || wd === 6) return false;
+    const hhmm = d.getHours() * 100 + d.getMinutes();
+    return hhmm >= 900 && hhmm <= 1530;
+  };
+
+  // 🔧 정규장 기준 cursor 계산 (장 마감 이후에는 15:30 고정)
+  const computeCursor0 = () => {
+    // 사용자가 end를 직접 지정했으면 그걸 우선
+    if (end && /^[0-9]{6}$/.test(String(end))) {
+      return String(end);
+    }
+
+    const { d, hhmmss } = nowSeoul();
+    const hhmm = d.getHours() * 100 + d.getMinutes();
+
+    if (session === 'regular') {
+      // 장 마감 이후(15:30 이후)에는 15:30 기준으로 "오늘 장 전체"를 조회
+      if (hhmm > 1530) {
+        return '153000';
+      }
+      // 장중이면 현재 시각 기준으로
+      return hhmmss;
+    }
+
+    // 장전/장후/전체 세션은 일단 현재 시각 기준 유지
+    return hhmmss;
+  };
+
+  try {
+    const token = await getAccessToken();
+    const out = [];
+    const cursor0 = computeCursor0();
+
+    // 어떤 세션을 조회할지 결정
+    let etcList = [];
+    if (session === 'regular') etcList = [0];
+    else if (session === 'pre') etcList = [1];
+    else if (session === 'after') etcList = [2];
+    else if (session === 'all') etcList = [0, 1, 2];
+    else etcList = [0];
+
+    // 정규장 외 시간에 all=false & session=regular면 안내만
+    if (String(all) !== 'true' && session === 'regular' && !isRegular()) {
+      console.log('[SERVER] 정규장이 아님');
+      return res.status(200).json({
+        note: '정규장이 아닙니다(평일 09:00~15:30). session=after 또는 session=all 사용 가능.',
+      });
+    }
+
+    // 세션별로 조회 → 누적
+    for (const ETC of etcList) {
+      let fetched = 0;
+      let cursor = cursor0;
+
+      for (let i = 0; i < 20; i++) {
+        const r = await axios.get(
+          `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice`,
+          {
+            headers: {
+              'content-type': 'application/json; charset=utf-8',
+              authorization: `Bearer ${token}`,
+              appkey: APP_KEY,
+              appsecret: APP_SECRET,
+              tr_id: 'FHKST03010200',
+              custtype: 'P',
+            },
+            params: {
+              FID_COND_MRKT_DIV_CODE: 'J', // 주식
+              FID_ETC_CLS_CODE: String(ETC), // 0=정규, 1=장전, 2=장후
+              FID_INPUT_ISCD: code,
+              FID_INPUT_HOUR_1: cursor, // 이 시각 "이전" 30개 반환
+              FID_PW_DATA_INCU_YN: 'N',
+            },
+          }
+        );
+
+        const rows = r.data?.output2 || r.data?.output || [];
+        console.log('[minutes] ETC=', ETC, 'cursor=', cursor, 'rows.len=', rows.length);
+
+        if (!rows.length) break;
+
+        for (const row of rows) {
+          const date = row.stck_bsop_date; // YYYYMMDD
+          const time = row.stck_cntg_hour; // HHMMSS
+          const t = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(
+            6,
+            8
+          )} ${time.slice(0, 2)}:${time.slice(2, 4)}`;
+
+          out.push({
+            t,
+            o: Number(row.stck_oprc),
+            h: Number(row.stck_hgpr),
+            l: Number(row.stck_lwpr),
+            c: Number(row.stck_prpr),
+            v: Number(row.cntg_vol ?? 0),
+          });
+
+          fetched++;
+          if (fetched >= Number(max)) break;
+        }
+        if (fetched >= Number(max)) break;
+
+        // 다음 청크 커서 (가장 오래된 시각 - 1초)
+        const oldest = rows[rows.length - 1];
+        const base = new Date(
+          `${oldest.stck_bsop_date.slice(0, 4)}-${oldest.stck_bsop_date.slice(
+            4,
+            6
+          )}-${oldest.stck_bsop_date.slice(6, 8)}T${oldest.stck_cntg_hour.slice(
+            0,
+            2
+          )}:${oldest.stck_cntg_hour.slice(2, 4)}:${oldest.stck_cntg_hour.slice(
+            4,
+            6
+          )}+09:00`
+        );
+        const prev = new Date(base.getTime() - 1000);
+        const pH = String(prev.getHours()).padStart(2, '0');
+        const pM = String(prev.getMinutes()).padStart(2, '0');
+        const pS = String(prev.getSeconds()).padStart(2, '0');
+        cursor = `${pH}${pM}${pS}`;
+        if (Number(cursor) < 90000 && ETC === 0) break; // 정규장은 09:00 이전이면 종료
+      }
+    }
+
+    // 병합: 같은 시각(t)이 중복될 수 있으니 마지막 기준으로 덮어쓰기
+    const map = new Map();
+    for (const b of out) map.set(b.t, b);
+    const merged = Array.from(map.values()).sort((a, b) =>
+      a.t < b.t ? -1 : 1
+    );
+
+    return res.json(merged);
+  } catch (e) {
+    console.error('❌ minutes 실패:', e?.response?.data || e.message);
+    return res.status(500).json({
+      error: '분봉 조회 실패',
+      details: e?.response?.data || e.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/kis/ticks:
+ *   get:
+ *     summary: 단일 종목 N틱 캔들 조회 (체결내역 기반)
+ *     tags: [KIS]
+ *     description: |
+ *       KIS 주식현재가 체결 API(FHKST01010300)를 사용해 체결내역을 조회하고,
+ *       지정한 개수(unit)만큼의 체결을 묶어서 OHLCV 캔들 형태로 반환합니다.
+ *     parameters:
+ *       - in: query
+ *         name: code
+ *         required: true
+ *         schema:
+ *           type: string
+ *           example: "005930"
+ *         description: 단축 종목코드(6자리)
+ *       - in: query
+ *         name: unit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 15
+ *           example: 15
+ *         description: 한 캔들을 구성하는 틱 체결 개수 (예 15 = 15틱 캔들)
+ *       - in: query
+ *         name: max
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 600
+ *         description: 최대 생성 캔들 개수 (실제 반환 개수는 보유 체결 수에 따라 달라질 수 있음)
+ *     responses:
+ *       200:
+ *         description: 시간 오름차순의 N틱 캔들 배열
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   t:
+ *                     type: string
+ *                     example: "2025-11-10 09:01:30"
+ *                     description: "YYYY-MM-DD HH:mm:ss (Asia/Seoul)"
+ *                   o:
+ *                     type: number
+ *                     example: 98600
+ *                   h:
+ *                     type: number
+ *                     example: 98700
+ *                   l:
+ *                     type: number
+ *                     example: 98000
+ *                   c:
+ *                     type: number
+ *                     example: 98200
+ *                   v:
+ *                     type: number
+ *                     example: 123456
+ *       400:
+ *         description: 파라미터 오류
+ *       500:
+ *         description: 서버 오류 또는 KIS API 실패
+ */
+router.get('/ticks', async (req, res) => {
+  const { code, unit = '15', max = '600' } = req.query;
+
+  if (!code || String(code).length !== 6) {
+    return res.status(400).json({ error: 'code(6자리 종목코드)가 필요합니다.' });
+  }
+
+  const unitN = Math.max(1, parseInt(String(unit), 10) || 15);    // 틱 개수(단위)
+  const maxCandles = Math.max(1, parseInt(String(max), 10) || 600); // 최대 캔들 수
+
+  // 서울 기준 오늘 날짜(체결 API는 당일 체결이라 날짜가 따로 안 와서 여기서 붙여줌)
+  const nowSeoul = () => {
+    const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+    const yyyy = String(d.getFullYear());
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return { d, ymd: `${yyyy}-${mm}-${dd}` };
+  };
+
+  try {
+    const token = await getAccessToken();
+
+    // 1) KIS 체결내역 호출
+    //    - FHKST01010300 / inquire-ccnl
+    //    - output: [{ stck_cntg_hour: "HHMMSS", stck_prpr: "가격", cntg_vol: "체결수량", ... }, ...]
+    const r = await axios.get(
+      `${KIS_API_BASE}/uapi/domestic-stock/v1/quotations/inquire-ccnl`,
+      {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          authorization: `Bearer ${token}`,
+          appkey: APP_KEY,
+          appsecret: APP_SECRET,
+          tr_id: 'FHKST01010300',
+        },
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',      // 주식
+          FID_INPUT_ISCD: String(code),     // 6자리 종목코드
+          // ※ 단순 사용이면 추가 FID/CTX 파라미터는 생략(최신 체결 N개만)
+        },
+      }
+    );
+
+    const rows = r.data?.output || [];
+    if (!rows.length) {
+      return res.status(200).json([]);
+    }
+
+    const { ymd } = nowSeoul();
+
+    // 2) 로우 틱 데이터 정규화
+   
+
+    const ticks = rows
+      .map((row) => {
+        const time = String(row.stck_cntg_hour || '').padStart(6, '0'); // HHMMSS
+        const hh = time.slice(0, 2);
+        const mm = time.slice(2, 4);
+        const ss = time.slice(4, 6);
+
+        return {
+          t: `${ymd} ${hh}:${mm}:${ss}`,
+          price: Number(row.stck_prpr),
+          vol: Number(row.cntg_vol ?? 0),
+        };
+      })
+      .filter((t) => !Number.isNaN(t.price));
+
+    if (!ticks.length) {
+      return res.status(200).json([]);
+    }
+
+    // KIS 체결은 보통 "최신 → 과거" 순으로 오기 때문에 시간 오름차순으로 정렬
+    ticks.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+
+    // 3) N틱 단위로 캔들(OHLCV) 생성
+
+
+    const candles = [];
+    const maxRawTicks = unitN * maxCandles;
+    const usableTicks = ticks.slice(-maxRawTicks); // 너무 많으면 뒤쪽(최근)만 사용
+
+    for (let i = 0; i < usableTicks.length; i += unitN) {
+      if (candles.length >= maxCandles) break;
+      const slice = usableTicks.slice(i, i + unitN);
+      if (!slice.length) break;
+
+      const first = slice[0];
+      const last = slice[slice.length - 1];
+
+      const prices = slice.map((x) => x.price);
+      const vols = slice.map((x) => x.vol);
+
+      candles.push({
+        t: first.t,
+        o: first.price,
+        h: Math.max(...prices),
+        l: Math.min(...prices),
+        c: last.price,
+        v: vols.reduce((sum, v) => sum + v, 0),
+      });
+    }
+
+    // 4) 시간 오름차순 그대로 반환 (이미 asc)
+    return res.status(200).json(candles);
+  } catch (e) {
+    console.error('❌ ticks 실패:', e?.response?.data || e.message);
+    return res
+      .status(500)
+      .json({ error: '틱 캔들 조회 실패', details: e?.response?.data || e.message });
+  }
+});
+
+
 export default router;

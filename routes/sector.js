@@ -981,7 +981,6 @@ console.log(bucket)
  *                       pubDate:
  *                         type: string
  */
-
 // 📡 뉴스 라우터
 router.get("/news", authenticateTokenOptional, async (req, res) => {
   try {
@@ -991,28 +990,9 @@ router.get("/news", authenticateTokenOptional, async (req, res) => {
     if (!clientId || !clientSecret) {
       return res.status(500).json({ error: "NAVER API 키 미설정" });
     }
-
     // 기본 키워드/섹터명
     let keywords = ["KOSPI", "KOSDAQ","화제","속보"];
     let sectorNames = [];
-
-    // 로그인 사용자면 관심 섹터의 종목명으로 키워드 대체
-    // if (req.userId) {
-    //   const sectors = await prisma.sector.findMany({
-    //     where: { userId: req.userId },
-    //     include: { stocks: true },
-    //   });
-
-    //   const extracted = [
-    //     ...new Set(
-    //       sectors.flatMap((sector) => sector.stocks.map((s) => s.name).filter(Boolean))
-    //     ),
-    //   ];
-
-    //   if (extracted.length > 0) keywords = extracted;
-    //   sectorNames = sectors.map((s) => s.name).filter(Boolean);
-    // }
-
     // 네이버 뉴스 병렬 호출(키워드별 상위 5건)
     const tasks = keywords.map((keyword) =>
       limit(async () => {
@@ -1042,8 +1022,6 @@ router.get("/news", authenticateTokenOptional, async (req, res) => {
         `${it.title ?? ""}_${it.pubDate ?? ""}`;
       if (!uniqMap.has(key)) uniqMap.set(key, it);
     }
-console.log("Array.from(uniqMap.values())",Array.from(uniqMap.values()).length)
-    // 최대 24건만 반환
     const articles = Array.from(uniqMap.values()).slice(0, 60);
 
     return res.json({

@@ -303,6 +303,7 @@ router.post('/kakao-login', async (req, res) => {
  */
 router.post('/refresh', async (req, res) => {
   const token = (req ).cookies?.refresh_token;
+  console.log("refresh token>>>",token) 
   if (!token) return res.status(401).json({ error: '리프레시 토큰이 없습니다' });
 
   try {
@@ -326,6 +327,7 @@ router.post('/refresh', async (req, res) => {
 
     // 새 Access 발급
     const newAccess = signAccessToken({ id: user.id });
+    console.log("new access token>>>",newAccess)
     res.json({ success: true, token: newAccess });
   } catch {
     return res.status(401).json({ error: '리프레시 토큰 만료 또는 유효하지 않음' });

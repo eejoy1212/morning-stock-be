@@ -1,207 +1,188 @@
-// ws-server.js
-import https from 'https';
-import { URL } from 'url';
-import axios from 'axios';
-import { WebSocketServer, WebSocket } from 'ws';
+
+import { WebSocketServer } from 'ws';
+import url from 'url';
 
 /**
- * 환경변수
- *  - KIS_API_BASE:   https://openapi.koreainvestment.com:9443  (REST)
- *  - KIS_WS_URL:     wss://ops.koreainvestment.com:21000       (WS 전용 도메인/포트! 문서 기준으로 수정)
- *  - KIS_APP_KEY, KIS_APP_SECRET
- *  - (옵션) KIS_TR_ID, KIS_TR_KEY  → 서버 기동 시 자동구독 하고 싶을 때
+ * 서버에 WS 허브를 붙인다.
+ * - path: /ws
+ * - 구독 프로토콜:
+ *   client -> server:
+ *     { "type":"subscribe", "ticker":"005930", "interval":1 }
+ *     { "type":"unsubscribe", "ticker":"005930" }
+ *   server -> client:
+ *     { "type":"snapshot", "ticker":"005930", "interval":1, "candles":[...] }
+ *     { "type":"candle", "ticker":"005930", "interval":1, "candle":{ t,o,h,l,c,v } }
+ *     { "type":"error", "message":"..." }
  */
-const API_BASE   = (process.env.KIS_API_BASE || '').trim().replace(/\.$/, '');
-const WS_URL     = (process.env.KIS_WS_URL   || '').trim().replace(/\.$/, '');
-const APP_KEY    = process.env.KIS_APP_KEY;
-const APP_SECRET = process.env.KIS_APP_SECRET;
-const DEFAULT_TR_ID  = process.env.KIS_TR_ID  || 'H0IFASP0'; // 예: 'H0IFASP0'
-const DEFAULT_TR_KEY = process.env.KIS_TR_KEY || '101S12'; // 예: '101S12'
+export function attachWebSocket(server, deps = {}) {
+  const wss = new WebSocketServer({ server, path: '/ws' });
 
-let kisSocket = null;
-let kisConnected = false;
-let APPROVAL_KEY = null;
+  // socket 상태/구독 관리
+  const clients = new Map();           // socket -> { tickers:Set<string>, interval:number, isAlive:boolean }
+  const subsByTicker = new Map();      // ticker -> Set<WebSocket>
 
-const clients = new Set();
-let lastKisMessage = null;
+  wss.on('connection', async (socket, req) => {
+    console.log("웹소켓 연결")
+    clients.set(socket, { tickers: new Set(), interval: 1, isAlive: true });
 
-// ───────────────────────────────────────────────────────────────────────────────
+    // 쿼리로 초기 구독: ws://host/ws?ticker=005930&interval=1
+    const { query } = url.parse(req.url || '', true);
+    const qTicker = query?.ticker && String(query.ticker);
+    const qInterval = Number.parseInt(query?.interval || '1', 10) || 1;
 
-function requireEnv() {
-  if (!API_BASE || !WS_URL) {
-    throw new Error('KIS_API_BASE / KIS_WS_URL 환경변수를 확인하세요. (WS 전용 도메인/포트!)');
-  }
-  if (!APP_KEY || !APP_SECRET) {
-    throw new Error('KIS_APP_KEY / KIS_APP_SECRET 환경변수를 확인하세요.');
-  }
-}
+    const info = clients.get(socket);
+    info.interval = qInterval;
 
-/** 실시간(웹소켓) 접속키 발급 */
-export async function fetchApprovalKey() {
-  requireEnv();
-  const url  = `${API_BASE}/oauth2/Approval`;
-  const host = new URL(API_BASE).hostname;
-
-  const payload = {
-    grant_type: 'client_credentials',
-    appkey: APP_KEY,
-    secretkey: APP_SECRET, // 문서의 필드명이 secretkey
-  };
-
-  const { data } = await axios.post(url, payload, {
-    headers: { 'content-type': 'application/json; charset=utf-8' },
-    httpsAgent: new https.Agent({ servername: host }), // SNI 고정
-    timeout: 10000,
-  });
-
-  if (!data?.approval_key) {
-    throw new Error(`approval_key가 없습니다: ${JSON.stringify(data)}`);
-  }
-  return data.approval_key;
-}
-
-// 구독/해제 프레임 생성기
-function buildFrame({ tr_type, tr_id, tr_key, approvalKey }) {
-  return {
-    header: {
-      approval_key: approvalKey,
-      custtype: 'P',          // 개인: P (법인: B)
-      tr_type: String(tr_type),// 1: 등록, 2: 해제
-      'content-type': 'utf-8',
-    },
-    body: {
-      tr_id,                  // 예: 'H0IFASP0'
-      tr_key,                 // 예: '101S12'
-    },
-  };
-}
-
-async function ensureApprovalKey() {
-  if (!APPROVAL_KEY) {
-    APPROVAL_KEY = await fetchApprovalKey();
-    // KIS 문서 기준: 따로 만료 응답 오기 전까지는 재사용
-    console.log('✅ approval_key fetched : ', APPROVAL_KEY);
-  }
-  return APPROVAL_KEY;
-}
-
-/** KIS 웹소켓 연결 */
-function connectKIS() {
-  requireEnv();
-
-  if (kisSocket && kisSocket.readyState === WebSocket.OPEN) return;
-
-
-
-
-
-const wsURL = new URL(process.env.KIS_WS_URL);
-const origin = `https://${new URL(API_BASE).host}`; // 예: https://openapi.koreainvestment.com:9443
-  console.log('🔗 KIS_WS_URL:', WS_URL);
-  console.log('🔗 Origin    :', origin);
-kisSocket = new WebSocket(process.env.KIS_WS_URL, {
-  origin,                 // 중요 (https + host:port)
-  perMessageDeflate: false,
-  handshakeTimeout: 25000 // 여유 증가
-});
-
-  kisSocket.on('upgrade', (res) => {
-    console.log('🔁 upgrade =>', res.statusCode, res.statusMessage, res.headers.upgrade);
-  });
-
-  kisSocket.on('unexpected-response', async (_req, res) => {
-    let body = '';
-    res.on('data', (c) => (body += c));
-    res.on('end', () => {
-      console.error('❌ unexpected-response', res.statusCode, res.statusMessage);
-      console.error('↩ headers:', res.headers);
-      if (body) console.error('↩ body:', body.slice(0, 800));
+    socket.on('pong', () => {
+        console.log("퐁")
+      const s = clients.get(socket);
+      if (s) s.isAlive = true;
     });
-  });
 
-  kisSocket.on('open', async () => {
-    console.log('✅ KIS WS connected');
-    kisConnected = true;
-
-    try {
-      const ak = await ensureApprovalKey();
-
-      // 서버 기동 시 자동 구독하고 싶으면 .env 로 설정
-      if (DEFAULT_TR_ID && DEFAULT_TR_KEY) {
-        const frame = buildFrame({
-          tr_type: 1,
-          tr_id: DEFAULT_TR_ID,
-          tr_key: DEFAULT_TR_KEY,
-          approvalKey: ak,
-        });
-        kisSocket.send(JSON.stringify(frame));
-        console.log('➡️ auto subscribed', frame.body);
-      } else {
-        console.log('ℹ️ 자동구독 생략 (KIS_TR_ID / KIS_TR_KEY 미설정)');
+    socket.on('message', async (buf) => {
+      let msg;
+   
+      try { msg = JSON.parse(buf.toString()); } catch (e) {
+        return sendErr(socket, 'invalid JSON');
       }
-    } catch (e) {
-      console.error('❌ approval/subscribe failed:', e?.response?.data || e.message);
-      kisSocket.close(4000, 'approval_failed');
+
+      if (msg.type === 'subscribe') {   
+        console.log("메시지",msg.type)
+        const ticker = String(msg.ticker || '').trim();
+        const interval = Number.parseInt(msg.interval || info.interval || '1', 10) || 1;
+        if (!ticker) return sendErr(socket, 'ticker is required');
+
+        subscribe(socket, ticker);
+        info.interval = interval;
+       // ✅ 구독 콜백
+       if (typeof deps.onSubscribe === 'function') {
+         try { deps.onSubscribe(ticker, interval); } catch {}
+       }
+
+        if (typeof deps.getCandles === 'function') {
+          try {
+            const candles = await deps.getCandles(ticker, interval);
+            safeSend(socket, { type: 'snapshot', ticker, interval, candles: Array.isArray(candles) ? candles : [] });
+          } catch (e) {
+            sendErr(socket, `snapshot failed: ${e?.message || e}`);
+          }
+        }
+        return;
+      }
+
+      if (msg.type === 'unsubscribe') {
+        const ticker = String(msg.ticker || '').trim();
+        if (!ticker) return sendErr(socket, 'ticker is required');
+        unsubscribe(socket, ticker);
+               if (typeof deps.onUnsubscribe === 'function') {
+         try { deps.onUnsubscribe(ticker); } catch {}
+       }
+        return;
+      }
+
+      sendErr(socket, 'unknown message type');
+    });
+
+    socket.on('close', () => cleanup(socket));
+    socket.on('error', () => cleanup(socket));
+
+    // 초기 구독 처리
+    if (qTicker) {
+      subscribe(socket, qTicker);
+           if (typeof deps.onSubscribe === 'function') {
+       try { deps.onSubscribe(qTicker, qInterval); } catch {}
+     }
+      if (typeof deps.getCandles === 'function') {
+        try {
+          const candles = await deps.getCandles(qTicker, qInterval);
+        console.log("푸시 전송:", ticker, candle);
+          safeSend(socket, { type: 'snapshot', ticker: qTicker, interval: qInterval, candles: candles ?? [] });
+        } catch (e) {
+          sendErr(socket, `snapshot failed: ${e?.message || e}`);
+        }
+      }
     }
   });
 
-  kisSocket.on('message', (buf) => {
-    const msg = buf.toString();
-    lastKisMessage = msg;
-    // 모든 브라우저 클라이언트에게 브로드캐스트
-    for (const c of clients) if (c.readyState === WebSocket.OPEN) c.send(msg);
-  });
+  // ping/pong keep-alive
+  const hb = setInterval(() => {
+    for (const [socket, state] of clients.entries()) {
+      if (!state.isAlive) {
+        cleanup(socket);
+        try { socket.terminate(); } catch {}
+        continue;
+      }
+      state.isAlive = false;
+      try { socket.ping(); } catch {}
+    }
+  }, 30_000);
 
-  kisSocket.on('close', (code, reason) => {
-    console.warn('⚠️ KIS WS closed', code, reason?.toString?.() || '');
-    kisConnected = false;
-    setTimeout(connectKIS, 5000);
-  });
+  wss.on('close', () => clearInterval(hb));
 
-  kisSocket.on('error', (err) => {
-    console.error('❌ KIS WS error:', err.message);
-  });
-}
+  // 외부에서 분봉 완료 시 호출해 구독자에게 푸시
+  function pushCandle(ticker, candle, intervalMinutes = 1) {
+    const subs = subsByTicker.get(ticker);
+    if (!subs || subs.size === 0) return;
+    for (const socket of subs) {
+      const info = clients.get(socket);
+      if (!info) continue;
+      if (info.interval !== intervalMinutes) continue; // 간단 필터
+      safeSend(socket, { type: 'candle', ticker, interval: intervalMinutes, candle });
+    }
+  }
 
-// 브라우저 ↔ 서버 WS (중계)
-export function attachWebSocket(server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  // 내부 유틸
 
-  wss.on('connection', (ws) => {
-    clients.add(ws);
-    console.log('🟢 client connected:', clients.size);
-    if (lastKisMessage) try { ws.send(lastKisMessage); } catch {}
+  function subscribe(socket, ticker) {
+    const s = clients.get(socket);
+    if (!s) return;
+    s.tickers.add(ticker);
+    if (!subsByTicker.has(ticker)) {
+      subsByTicker.set(ticker, new Set());
+      // 🔔 최초 구독 발생
+      deps.onSubscribe?.(ticker, s.interval);
+    }
+    subsByTicker.get(ticker).add(socket);
+  }
 
-    // 프론트에서 raw 프레임을 보내면 그대로 KIS로 전달 (원하면 REST 대신 WS로 구독 제어)
-    ws.on('message', (data) => {
-      if (kisSocket?.readyState === WebSocket.OPEN) kisSocket.send(data);
-    });
+  function unsubscribe(socket, ticker) {
+    const s = clients.get(socket);
+    if (s) s.tickers.delete(ticker);
+    const set = subsByTicker.get(ticker);
+    if (set) {
+      set.delete(socket);
+      if (set.size === 0) {
+        subsByTicker.delete(ticker);
+        // 🔔 마지막 구독 해제
+        deps.onUnsubscribe?.(ticker);
+      }
+    }
+  }
 
-    ws.on('close', () => {
-      clients.delete(ws);
-      console.log('🔴 client disconnected:', clients.size);
-    });
-  });
 
-  connectKIS();
+  function cleanup(socket) {
+    const s = clients.get(socket);
+    if (!s) return;
+    for (const t of s.tickers) {
+      const set = subsByTicker.get(t);
+      if (set) {
+        set.delete(socket);
+        if (set.size === 0) subsByTicker.delete(t);
+      }
+    }
+    clients.delete(socket);
+  }
 
-  // 필요한 컨트롤을 노출 (원하면 라우터에서 호출)
-  return {
-    getStatus: () => ({ kisConnected, clients: clients.size }),
-    getLast:   () => lastKisMessage,
-    async subscribe(tr_id, tr_key) {
-      const ak = await ensureApprovalKey();
-      const frame = buildFrame({ tr_type: 1, tr_id, tr_key, approvalKey: ak });
-      if (kisSocket?.readyState !== WebSocket.OPEN) throw new Error('KIS WS not connected');
-      kisSocket.send(JSON.stringify(frame));
-      return frame;
-    },
-    async unsubscribe(tr_id, tr_key) {
-      const ak = await ensureApprovalKey();
-      const frame = buildFrame({ tr_type: 2, tr_id, tr_key, approvalKey: ak });
-      if (kisSocket?.readyState !== WebSocket.OPEN) throw new Error('KIS WS not connected');
-      kisSocket.send(JSON.stringify(frame));
-      return frame;
-    },
-  };
+  function safeSend(socket, payload) {
+    if (socket.readyState === 1) { // WebSocket.OPEN
+      try { socket.send(JSON.stringify(payload)); } catch {}
+    }
+  }
+
+  function sendErr(socket, message) {
+    console.log("send err :",message)
+    safeSend(socket, { type: 'error', message });
+  }
+
+  return { wss, pushCandle };
 }

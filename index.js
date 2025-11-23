@@ -1,9 +1,9 @@
 // // 로컬용
-import dotenv from 'dotenv';
-dotenv.config();
+// import dotenv from 'dotenv';
+// dotenv.config();
 import express from 'express';
 import cors from 'cors';
-
+import cookieParser from 'cookie-parser';
 import userRoutes from './routes/user.js';
 import sectorRoutes from './routes/sector.js';
 import stockRoutes from './routes/stock.js';
@@ -37,6 +37,7 @@ app.use(cors({
   },
   credentials: true,
 }));
+app.use(cookieParser());  
 app.use(express.json());
 
 app.get('/api/test', (req, res) => {
