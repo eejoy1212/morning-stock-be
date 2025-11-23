@@ -9,6 +9,7 @@ module.exports = {
       env: {
         DATABASE_URL: "mysql://root:Cat18651@@localhost:3306/morningstock",
         JWT_SECRET: "daf4eb5603c636e76386ce5a2abb40865a08d2c578bd876c7e00da968cc26c86",
+        REFRESH_SECRET:"jrF7$zP2!qN9uE@k4vX1#LmC8wR6^bT0yH3&ZaSd5KpG7nQ",
         NEWSDATA_API_KEY: "414f1ebf0efa2326c9556065cf86662b",
         NAVER_CLIENT_ID: "NlEQazrU8untNAINY6M6",
         NAVER_CLIENT_SECRET: "TBx9QCXAop",
